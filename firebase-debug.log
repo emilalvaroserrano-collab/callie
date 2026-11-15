@@ -1,0 +1,17 @@
+[debug] [2026-11-15T03:19:19.567Z] ----------------------------------------------------------------------
+[debug] [2026-11-15T03:19:19.568Z] Command:       /Users/masterdee/.local/share/fnm/node-versions/v22.23.1/installation/bin/node /Users/masterdee/.local/state/fnm_multishells/74382_1794708173432/bin/firebase database:get /users --project csr-studio
+[debug] [2026-11-15T03:19:19.569Z] CLI Version:   15.35.0
+[debug] [2026-11-15T03:19:19.569Z] Platform:      darwin
+[debug] [2026-11-15T03:19:19.569Z] Node Version:  v22.23.1
+[debug] [2026-11-15T03:19:19.569Z] Detected Agent: opencode
+[debug] [2026-11-15T03:19:19.569Z] Time:          Sun Nov 15 2026 11:19:19 GMT+0800 (Philippine Standard Time)
+[debug] [2026-11-15T03:19:19.569Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-11-15T03:19:19.756Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-11-15T03:19:19.756Z] > authorizing via signed-in user (emilalvaroserrano@gmail.com)
+[debug] [2026-11-15T03:19:19.756Z] [iam] checking project csr-studio for permissions ["firebase.projects.get","firebasedatabase.instances.get"]
+[debug] [2026-11-15T03:19:19.761Z] Checked if tokens are valid: true, expires at: 1794716046463
+[debug] [2026-11-15T03:19:19.761Z] Checked if tokens are valid: true, expires at: 1794716046463
+[debug] [2026-11-15T03:19:19.761Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/csr-studio:testIamPermissions [none]
+[debug] [2026-11-15T03:19:19.761Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/csr-studio:testIamPermissions  x-goog-user-project=csr-studio
+[debug] [2026-11-15T03:19:19.761Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/csr-studio:testIamPermissions {"permissions":["firebase.projects.get","firebasedatabase.instances.get"]}

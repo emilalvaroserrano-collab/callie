@@ -401,7 +401,6 @@ let mode = 'signin';
 let busy = false;
 let redirecting = false;
 let splashTimer = null;
-let manualFlow = false;
 let homeTimer = null;
 
 const IS_FILE = location.protocol === 'file:';
@@ -466,22 +465,14 @@ function goHome() {
 }
 
 /*
- * A manual sign-in owns its own redirect so the profile record gets a moment to
- * be written. The delay is short and never blocks: nothing is awaited.
+ * Once Firebase reports a session, always navigate - even if the sign-in call
+ * itself reports an error afterwards. A short delay lets the profile write start
+ * without ever blocking the redirect.
  */
-function beginManualFlow() {
-  manualFlow = true;
-  clearTimeout(homeTimer);
-}
-
-function scheduleGoHome(delay = 700) {
+function scheduleGoHome(delay = 800) {
+  if (redirecting) return;
   clearTimeout(homeTimer);
   homeTimer = setTimeout(goHome, delay);
-}
-
-function endManualFlow() {
-  manualFlow = false;
-  clearTimeout(homeTimer);
 }
 
 function showAlert(msg, type = 'error') {
@@ -529,7 +520,10 @@ function friendlyError(err) {
     'auth/too-many-requests': 'Too many attempts. Try again shortly.',
     'auth/popup-closed-by-user': 'Google sign-in was closed.',
     'auth/network-request-failed': 'Network error. Check your connection.',
-    'auth/unauthorized-domain': 'Domain not authorized in Firebase Auth.'
+    'auth/unauthorized-domain': 'Domain not authorized in Firebase Auth.',
+    'auth/account-exists-with-different-credential': 'This email already has an account. Sign in with the method you used originally.',
+    'auth/operation-not-allowed': 'This sign-in method is not enabled for this project.',
+    'auth/cancelled-popup-request': 'Sign-in was interrupted. Please try again.'
   };
   return map[err?.code] || err?.message || 'Authentication failed.';
 }
@@ -582,7 +576,6 @@ $('togglePw').addEventListener('click', () => {
 $('googleBtn').addEventListener('click', async () => {
   if (busy) return;
   showAlert('');
-  beginManualFlow();
   setBusy(true, 'Connecting…');
   try {
     const res = await signInWithPopup(auth, googleProvider);
@@ -592,20 +585,28 @@ $('googleBtn').addEventListener('click', async () => {
       scheduleGoHome();
       return;
     }
-    endManualFlow();
     setBusy(false);
   } catch (err) {
+    /* The session can exist even when the popup reports an error. */
+    if (auth.currentUser) {
+      scheduleGoHome(500);
+      return;
+    }
     if (err?.code === 'auth/popup-blocked' || err?.code === 'auth/operation-not-supported-in-this-environment') {
       try {
         await signInWithRedirect(auth, googleProvider);
         return;
       } catch (redirectErr) {
+        if (auth.currentUser) {
+          scheduleGoHome(500);
+          return;
+        }
         showAlert(friendlyError(redirectErr), 'error');
+        setBusy(false);
+        return;
       }
-    } else {
-      showAlert(friendlyError(err), 'error');
     }
-    endManualFlow();
+    showAlert(friendlyError(err), 'error');
     setBusy(false);
   }
 });
@@ -636,7 +637,6 @@ $('authForm').addEventListener('submit', async e => {
     return;
   }
 
-  beginManualFlow();
   setBusy(true);
   try {
     let user = null;
@@ -654,10 +654,13 @@ $('authForm').addEventListener('submit', async e => {
       scheduleGoHome();
       return;
     }
-    endManualFlow();
     setBusy(false);
   } catch (err) {
-    endManualFlow();
+    /* If the auth call established a session before failing, still enter the app. */
+    if (auth.currentUser) {
+      scheduleGoHome(500);
+      return;
+    }
     setBusy(false);
     showAlert(friendlyError(err), 'error');
   }
@@ -693,13 +696,10 @@ getRedirectResult(auth)
 
 onAuthStateChanged(auth, user => {
   if (user) {
-    /* A click handler owns its own redirect while a sign-in is in flight. */
-    if (manualFlow) return;
-    /* Always release the page: a slow RTDB write must not block navigation. */
+    /* Any confirmed session always navigates - no gate, no stuck state. */
     saveUserProfileToRTDB(user).catch(() => {});
-    goHome();
+    scheduleGoHome();
   } else {
-    endManualFlow();
     hideSplash();
     setBusy(false);
     clearRedirectGuard();
