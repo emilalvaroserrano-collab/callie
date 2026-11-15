@@ -225,6 +225,7 @@ export default function AuthApp({ firebaseConfig }) {
         const result = await signInWithPopup(auth, googleProvider);
         if (result?.user) {
           /* Profile sync is best-effort: it must never block navigation. */
+          clearRedirectGuard();
           saveUserProfileToRTDB(result.user).catch(() => {});
           scheduleGoHome();
           return;
@@ -301,6 +302,7 @@ export default function AuthApp({ firebaseConfig }) {
           saveUserProfileToRTDB(user).catch(() => {});
         }
         if (user) {
+          clearRedirectGuard();
           scheduleGoHome();
           return;
         }
@@ -341,6 +343,7 @@ export default function AuthApp({ firebaseConfig }) {
     getRedirectResult(auth)
       .then((result) => {
         if (result?.user) {
+          clearRedirectGuard();
           saveUserProfileToRTDB(result.user).catch(() => {});
           goHome();
         }
@@ -354,6 +357,7 @@ export default function AuthApp({ firebaseConfig }) {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         /* Any confirmed session always navigates - no gate, no stuck state. */
+        clearRedirectGuard();
         saveUserProfileToRTDB(user).catch(() => {});
         scheduleGoHome();
       } else {
