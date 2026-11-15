@@ -50,6 +50,7 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
     let studioInitialized = false;
     let authRedirecting = false;
     let disposed = false;
+    let authGraceTimer = null;
 
     /* ---------- WhatsApp reports ---------- */
     const WA_SETTINGS_KEY = 'alex-whatsapp-reports-v1';
@@ -1473,15 +1474,26 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
 
     const unsubscribe = onAuthStateChanged(fbAuth, (user) => {
       if (disposed) return;
-      if (!user) {
-        goToAuth();
+      if (user) {
+        if (authGraceTimer) {
+          clearTimeout(authGraceTimer);
+          authGraceTimer = null;
+        }
+        clearRedirectGuard();
+        initStudio();
+        /* Reveal the app immediately; the profile chip can fill in afterwards. */
+        $('authGate').classList.add('hidden');
+        renderSignedInUser(user).catch(() => {});
         return;
       }
-      clearRedirectGuard();
-      initStudio();
-      /* Reveal the app immediately; the profile chip can fill in afterwards. */
-      $('authGate').classList.add('hidden');
-      renderSignedInUser(user).catch(() => {});
+      /* Give Firebase a moment to restore a persisted session before bouncing. */
+      if (authGraceTimer) return;
+      authGraceTimer = setTimeout(() => {
+        authGraceTimer = null;
+        if (disposed) return;
+        if (fbAuth.currentUser) return;
+        goToAuth();
+      }, 1500);
     });
 
     return () => {
@@ -1490,6 +1502,7 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       clearInterval(interval);
       clearInterval(clockInterval);
       clearTimeout(toastTimer);
+      if (authGraceTimer) clearTimeout(authGraceTimer);
       stopWaPolling();
       document.body.classList.remove('wa-modal-open');
       closeRingAudio();
