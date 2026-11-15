@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import path from 'node:path';
 
 /* Load a local .env file when present (Vercel injects env vars directly). */
 function loadDotEnv(file) {
@@ -19,14 +18,15 @@ function loadDotEnv(file) {
   }
 }
 
-loadDotEnv(new URL('../.env', import.meta.url));
+const rootDir = new URL('..', import.meta.url);
+loadDotEnv(new URL('.env', rootDir));
 
 const required = [];
-const env = (name, fallback = '') => {
+const env = (name) => {
   const value = process.env[name] ?? process.env[`NEXT_PUBLIC_${name}`];
   if (value === undefined || value === '') {
-    if (fallback === '') required.push(name);
-    return fallback;
+    required.push(name);
+    return '';
   }
   return value;
 };
@@ -56,7 +56,17 @@ if (required.length) {
   process.exit(1);
 }
 
-const out = `window.APP_CONFIG = ${JSON.stringify(config, null, 2)};\n`;
-const target = new URL('../config.js', import.meta.url);
-fs.writeFileSync(target, out);
-console.log('Generated ' + path.basename(target.pathname) + ' from environment variables.');
+const configSource = `window.APP_CONFIG = ${JSON.stringify(config, null, 2)};\n`;
+
+/* Root copy keeps local file:// / static previews working. */
+fs.writeFileSync(new URL('config.js', rootDir), configSource);
+
+/* Only files placed in public/ are uploaded and served by Vercel. */
+const publicDir = new URL('public/', rootDir);
+fs.mkdirSync(publicDir, { recursive: true });
+for (const file of ['index.html', 'auth.html']) {
+  fs.copyFileSync(new URL(file, rootDir), new URL(file, publicDir));
+}
+fs.writeFileSync(new URL('config.js', publicDir), configSource);
+
+console.log('Generated config.js and public/ build output from environment variables.');
