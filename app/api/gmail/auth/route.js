@@ -7,7 +7,19 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
-  const auth = await verifyFirebaseToken(request);
+  // Accept the Firebase ID token from the query string (browser navigation) or Authorization header.
+  const { searchParams } = new URL(request.url);
+  const queryToken = searchParams.get('token');
+  let auth;
+  if (queryToken) {
+    const fakeRequest = new Request(request.url, {
+      headers: { authorization: `Bearer ${queryToken}` }
+    });
+    auth = await verifyFirebaseToken(fakeRequest);
+  } else {
+    auth = await verifyFirebaseToken(request);
+  }
+
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }

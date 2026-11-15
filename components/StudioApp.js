@@ -1506,8 +1506,8 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
         showToast('Your session expired. Please sign in again.', true);
         return;
       }
-      // Redirect to Google OAuth
-      window.location.href = '/api/gmail/auth';
+      // Redirect to Google OAuth (pass the Firebase ID token so the server can verify the session)
+      window.location.href = `/api/gmail/auth?token=${encodeURIComponent(token)}`;
     }
 
     async function gmailDisconnect() {
