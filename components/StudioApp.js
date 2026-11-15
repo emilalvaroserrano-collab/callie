@@ -1405,9 +1405,8 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       if (session.pairingCode) {
         if (codeBox) codeBox.hidden = false;
         if (pairingCode) {
-          const code = session.pairingCode;
-          pairingCode.textContent =
-            code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+          // Baileys pairing codes are exactly 8 chars (Crockford base32); no dashes allowed.
+          pairingCode.textContent = session.pairingCode;
         }
       }
 
