@@ -55,7 +55,7 @@ The app deploys to Vercel as a standard Next.js project:
 vercel --prod
 ```
 
-Production: <https://csragent.vercel.app>
+Production: <https://callie-ochre.vercel.app>
 
 ## WhatsApp call reports
 
