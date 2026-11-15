@@ -63,6 +63,11 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
     let waConnecting = false;
     let waStartedAtIso = null;
 
+    /* ---------- Gmail integration ---------- */
+    let gmailConnected = false;
+    let gmailEmail = '';
+    let gmailConfigured = false;
+
     const makeId = () =>
       window.crypto?.randomUUID?.() || `p-${Date.now()}-${Math.floor(Math.random() * 1e8)}`;
 
@@ -936,6 +941,25 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       clockInterval = setInterval(updateClock, 30_000);
       setCallState('idle');
       initWhatsApp().catch(() => {});
+      gmailFetchStatus().catch(() => {});
+
+      // Handle Gmail OAuth callback redirect.
+      try {
+        const params = new URLSearchParams(location.search);
+        if (params.get('gmail') === 'connected') {
+          gmailConnected = true;
+          gmailFetchStatus().catch(() => {});
+          showToast('Gmail connected successfully.');
+        } else if (params.get('gmail') === 'error') {
+          showToast(`Gmail connection failed: ${params.get('reason') || 'unknown error'}`, true);
+        }
+        if (params.has('gmail')) {
+          const url = new URL(location.href);
+          url.searchParams.delete('gmail');
+          url.searchParams.delete('reason');
+          window.history.replaceState({}, '', url.pathname + url.search);
+        }
+      } catch (error) {}
     }
 
     const onProfilesChange = (event) => {
@@ -1424,6 +1448,85 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       await waFetchSession();
     }
 
+    async function gmailFetchStatus() {
+      try {
+        const token = await fbAuth.currentUser?.getIdToken();
+        if (!token) return;
+        const response = await fetch('/api/gmail/status', {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store'
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          gmailConfigured = false;
+          updateGmailUI();
+          return;
+        }
+        gmailConfigured = data.configured !== false;
+        gmailConnected = !!data.connected;
+        gmailEmail = data.email || '';
+        updateGmailUI();
+      } catch (error) {
+        updateGmailUI();
+      }
+    }
+
+    function updateGmailUI() {
+      const statusText = $('gmailStatusText');
+      const connectBtn = $('gmailConnect');
+      const disconnectBtn = $('gmailDisconnect');
+      const dot = $('gmailDot');
+      if (dot) {
+        dot.classList.remove('connected', 'connecting', 'off');
+        dot.classList.add(gmailConnected ? 'connected' : 'off');
+      }
+      if (!gmailConfigured) {
+        if (statusText) statusText.textContent = 'Gmail OAuth not configured';
+        if (connectBtn) connectBtn.hidden = true;
+        if (disconnectBtn) disconnectBtn.hidden = true;
+        return;
+      }
+      if (gmailConnected) {
+        if (statusText) statusText.textContent = `Connected · ${gmailEmail || 'Gmail'}`;
+        if (connectBtn) connectBtn.hidden = true;
+        if (disconnectBtn) disconnectBtn.hidden = false;
+      } else {
+        if (statusText) statusText.textContent = 'Not connected';
+        if (connectBtn) {
+          connectBtn.hidden = false;
+          connectBtn.textContent = 'Connect Gmail';
+        }
+        if (disconnectBtn) disconnectBtn.hidden = true;
+      }
+    }
+
+    async function gmailConnect() {
+      const token = await fbAuth.currentUser?.getIdToken();
+      if (!token) {
+        showToast('Your session expired. Please sign in again.', true);
+        return;
+      }
+      // Redirect to Google OAuth
+      window.location.href = '/api/gmail/auth';
+    }
+
+    async function gmailDisconnect() {
+      try {
+        const token = await fbAuth.currentUser?.getIdToken();
+        if (!token) return;
+        await fetch('/api/gmail/disconnect', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        gmailConnected = false;
+        gmailEmail = '';
+        updateGmailUI();
+        showToast('Gmail disconnected.');
+      } catch (error) {
+        showToast('Unable to disconnect Gmail.', true);
+      }
+    }
+
     $('profiles').addEventListener('change', onProfilesChange);
     $('addProfile').addEventListener('click', onAddProfile);
     $('deleteProfile').addEventListener('click', onDeleteProfile);
@@ -1482,6 +1585,9 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
     );
     $('waTabQr')?.addEventListener('click', () => switchWaTab('qr'));
     $('waTabCode')?.addEventListener('click', () => switchWaTab('code'));
+
+    $('gmailConnect')?.addEventListener('click', () => gmailConnect());
+    $('gmailDisconnect')?.addEventListener('click', () => gmailDisconnect());
     $('waGetCode')?.addEventListener('click', async () => {
       const phone = ($('waPhone')?.value || '').trim();
       const btn = $('waGetCode');
@@ -1867,6 +1973,35 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
                   After each finished call, the agent sends a transcript summary to your WhatsApp.
                   Nothing is shared with third parties.
                 </p>
+              </section>
+
+              <section className="wa-card" aria-labelledby="gmailHeading">
+                <div className="wa-head">
+                  <span className="wa-icon" aria-hidden="true" style={{ background: '#2a2a3a', color: '#ea4335' }}>
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z" />
+                    </svg>
+                  </span>
+                  <div className="wa-head-text">
+                    <div className="wa-title" id="gmailHeading">Gmail integration</div>
+                    <div className="wa-sub" id="gmailStatusText">Checking connection…</div>
+                  </div>
+                  <span className="wa-dot" id="gmailDot" aria-hidden="true" />
+                </div>
+
+                <p className="wa-note" id="gmailNote">
+                  Connect your Gmail so the voice agent can read, search, send, and manage your emails during calls.
+                  Uses Google OAuth — you stay in control.
+                </p>
+
+                <div className="wa-actions">
+                  <button className="wa-btn" id="gmailConnect" type="button">
+                    Connect Gmail
+                  </button>
+                  <button className="wa-btn ghost" id="gmailDisconnect" type="button" hidden>
+                    Disconnect
+                  </button>
+                </div>
               </section>
             </div>
           </section>

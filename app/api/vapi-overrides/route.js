@@ -25,6 +25,25 @@ export async function POST(request) {
     );
   }
 
+  // Check Gmail connection status for this user.
+  let gmailConnected = false;
+  let gmailEmail = '';
+  try {
+    const { getApp, getApps, initializeApp } = await import('firebase/app');
+    const { getDatabase, ref, get } = await import('firebase/database');
+    const { getFirebaseConfig } = await import('@/lib/server-config');
+    const firebaseConfig = getFirebaseConfig();
+    const fbApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
+    const db = getDatabase(fbApp);
+    const snap = await get(ref(db, `users/${auth.uid}/gmail`));
+    if (snap.exists()) {
+      gmailConnected = true;
+      gmailEmail = snap.val()?.email || '';
+    }
+  } catch (error) {}
+
+  body = { ...body, gmailConnected, gmailEmail, uid: auth.uid };
+
   try {
     const overrides = buildOverrides(body);
     return NextResponse.json(

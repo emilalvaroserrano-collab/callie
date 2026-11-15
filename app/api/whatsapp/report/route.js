@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { buildCallSummary } from '@/lib/call-summary';
+import { generateCallAnalysis } from '@/lib/call-analysis';
 import { verifyFirebaseToken } from '@/lib/verify-token';
 import { getWhatsAppConfig, whatsappRequest } from '@/lib/whatsapp-service';
 
@@ -42,13 +43,20 @@ export async function POST(request) {
   const callId = typeof body?.callId === 'string' ? body.callId : '';
   const destination = typeof body?.destination === 'string' ? body.destination : '';
 
+  const callAnalysis = await generateCallAnalysis({
+    persona,
+    transcript,
+    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0
+  });
+
   const summary = buildCallSummary({
     persona,
     transcript,
     startedAt,
     durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0,
     timeZone,
-    callId
+    callId,
+    callAnalysis
   });
 
   try {
