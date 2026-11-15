@@ -1,8 +1,18 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+next-env.d.ts
+
+# Environment variables (never commit real keys)
 .env
 .env.*
 !.env.example
-node_modules/
-.DS_Store
+
+# Vercel local state
 .vercel/
-config.js
-public/
+
+# OS files
+.DS_Store
