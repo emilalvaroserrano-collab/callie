@@ -572,25 +572,73 @@ $('transcriptBtn').addEventListener('click',()=>toggleTray(true));$('closeTransc
 $('clearTranscript').addEventListener('click',()=>{if(callState==='connected'){showToast('End the call before clearing history.',true);return}transcript=[];partial=null;renderTranscript();showToast('Local transcript cleared.')});
 window.addEventListener('beforeunload',()=>{closeRingAudio();try{if(vapi&&callState==='connected')vapi.stop()}catch(e){}});
 
+/* ---------- Auth gate: redirect helpers ---------- */
+const IS_FILE = location.protocol === 'file:';
+const AUTH_URL = IS_FILE ? 'auth.html' : '/auth';
+const REDIRECT_GUARD_KEY = 'csr-redirect-guard';
+let authRedirecting = false;
+
+function clearRedirectGuard() {
+  try { sessionStorage.removeItem(REDIRECT_GUARD_KEY); } catch (e) {}
+}
+
+/* Stops a redirect ping-pong with the auth page when the session can't settle. */
+function redirectCountExceeded() {
+  try {
+    const now = Date.now();
+    const hops = JSON.parse(sessionStorage.getItem(REDIRECT_GUARD_KEY) || '[]')
+      .filter(t => typeof t === 'number' && now - t < 6000);
+    hops.push(now);
+    sessionStorage.setItem(REDIRECT_GUARD_KEY, JSON.stringify(hops));
+    return hops.length > 3;
+  } catch (e) {
+    return false;
+  }
+}
+
+function showGateError() {
+  const gate = $('authGate');
+  if (!gate) return;
+  gate.innerHTML = '<div class="gate-error" style="max-width:420px;padding:24px;text-align:center;font-size:14px;line-height:1.6">We could not verify your session.<br><a href="' + AUTH_URL + '" style="color:var(--mint);font-weight:600">Go to sign in</a></div>';
+}
+
+function goToAuth() {
+  if (authRedirecting) return;
+  authRedirecting = true;
+  if (redirectCountExceeded()) {
+    authRedirecting = false;
+    showGateError();
+    return;
+  }
+  const next = encodeURIComponent(location.pathname + location.search + location.hash);
+  window.location.replace(`${AUTH_URL}?next=${next}`);
+}
+
 $('signOutBtn').addEventListener('click',async()=>{
   $('signOutBtn').disabled=true;
   closeRingAudio();
   try{if(vapi&&callState==='connected')vapi.stop()}catch(e){}
   try{
     await signOut(fbAuth);
-    window.location.replace('auth.html');
   }catch(e){
     $('signOutBtn').disabled=false;
     showToast('Unable to sign out right now.',true);
+    return;
   }
+  clearRedirectGuard();
+  window.location.replace(AUTH_URL);
 });
 
 async function renderSignedInUser(user){
   let displayName=user.displayName||(user.email?user.email.split('@')[0]:'Account');
   let photoURL=user.photoURL||'';
   try{
-    const snap=await get(ref(fbDb,`users/${user.uid}`));
-    if(snap.exists()){
+    /* Never let a slow RTDB read hold up the app. */
+    const snap=await Promise.race([
+      get(ref(fbDb,`users/${user.uid}`)),
+      new Promise(resolve=>setTimeout(()=>resolve(null),2500))
+    ]);
+    if(snap&&snap.exists()){
       const data=snap.val();
       if(data?.displayName)displayName=data.displayName;
       if(data?.photoURL)photoURL=data.photoURL;
@@ -624,14 +672,16 @@ function initStudio(){
   setCallState('idle');
 }
 
-onAuthStateChanged(fbAuth,async user=>{
+onAuthStateChanged(fbAuth,user=>{
   if(!user){
-    window.location.replace('auth.html');
+    goToAuth();
     return;
   }
+  clearRedirectGuard();
   initStudio();
-  await renderSignedInUser(user);
+  /* Reveal the app immediately; the profile chip can fill in afterwards. */
   $('authGate').classList.add('hidden');
+  renderSignedInUser(user).catch(()=>{});
 });
 </script>
 </body>

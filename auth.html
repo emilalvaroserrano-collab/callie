@@ -399,11 +399,88 @@ googleProvider.setCustomParameters({ prompt: 'select_account' });
 const $ = id => document.getElementById(id);
 let mode = 'signin';
 let busy = false;
-let authFlowInProgress = false;
+let redirecting = false;
+let splashTimer = null;
+let manualFlow = false;
+let homeTimer = null;
 
-if (location.protocol === 'file:') {
-  $('authSplash').classList.add('hidden');
+const IS_FILE = location.protocol === 'file:';
+const APP_URL = IS_FILE ? 'index.html' : '/';
+const AUTH_URL = IS_FILE ? 'auth.html' : '/auth';
+const REDIRECT_GUARD_KEY = 'csr-redirect-guard';
+
+if (IS_FILE) {
+  hideSplash();
   showAlert('Serve over http://localhost or https:// for Firebase Auth.', 'error');
+}
+
+function hideSplash() {
+  clearTimeout(splashTimer);
+  const splash = $('authSplash');
+  if (splash) splash.classList.add('hidden');
+}
+
+function clearRedirectGuard() {
+  try { sessionStorage.removeItem(REDIRECT_GUARD_KEY); } catch (e) {}
+}
+
+/* Stops an auth <-> app ping-pong loop when the session cannot be resolved. */
+function redirectCountExceeded() {
+  try {
+    const now = Date.now();
+    const hops = JSON.parse(sessionStorage.getItem(REDIRECT_GUARD_KEY) || '[]')
+      .filter(t => typeof t === 'number' && now - t < 6000);
+    hops.push(now);
+    sessionStorage.setItem(REDIRECT_GUARD_KEY, JSON.stringify(hops));
+    return hops.length > 3;
+  } catch (e) {
+    return false;
+  }
+}
+
+/* Only allow same-origin, non-auth destinations from ?next=. */
+function safeNext() {
+  const raw = new URLSearchParams(location.search).get('next');
+  if (!raw) return '';
+  try {
+    const target = new URL(raw, location.origin);
+    if (target.origin !== location.origin) return '';
+    if (target.pathname === '/auth' || target.pathname === '/auth.html') return '';
+    return target.pathname + target.search + target.hash;
+  } catch (e) {
+    return '';
+  }
+}
+
+function goHome() {
+  if (redirecting) return;
+  redirecting = true;
+  if (redirectCountExceeded()) {
+    redirecting = false;
+    hideSplash();
+    showAlert('We could not confirm your session. Please sign in again. If this keeps happening, check that this domain is authorized in Firebase Authentication.', 'error');
+    return;
+  }
+  window.location.replace(safeNext() || APP_URL);
+}
+
+/*
+ * A manual sign-in owns its own redirect so the profile record gets a moment to
+ * be written. The delay is short and never blocks: nothing is awaited.
+ */
+function beginManualFlow() {
+  manualFlow = true;
+  clearTimeout(homeTimer);
+}
+
+function scheduleGoHome(delay = 700) {
+  clearTimeout(homeTimer);
+  homeTimer = setTimeout(goHome, delay);
+}
+
+function endManualFlow() {
+  manualFlow = false;
+  clearTimeout(homeTimer);
 }
 
 function showAlert(msg, type = 'error') {
@@ -483,9 +560,10 @@ async function saveUserProfileToRTDB(user, extras = {}) {
   });
 }
 
-function goHome() {
-  window.location.replace('index.html');
-}
+/* Never let the splash trap the page if Firebase is slow or offline. */
+splashTimer = setTimeout(() => {
+  if (!redirecting) hideSplash();
+}, 7000);
 
 $('tabSignIn').addEventListener('click', () => setMode('signin'));
 $('tabSignUp').addEventListener('click', () => setMode('signup'));
@@ -503,12 +581,18 @@ $('togglePw').addEventListener('click', () => {
 $('googleBtn').addEventListener('click', async () => {
   if (busy) return;
   showAlert('');
-  authFlowInProgress = true;
+  beginManualFlow();
   setBusy(true, 'Connecting…');
   try {
     const res = await signInWithPopup(auth, googleProvider);
-    await saveUserProfileToRTDB(res.user);
-    goHome();
+    if (res?.user) {
+      /* Profile sync is best-effort: it must never block navigation. */
+      saveUserProfileToRTDB(res.user).catch(() => {});
+      scheduleGoHome();
+      return;
+    }
+    endManualFlow();
+    setBusy(false);
   } catch (err) {
     if (err?.code === 'auth/popup-blocked' || err?.code === 'auth/operation-not-supported-in-this-environment') {
       try {
@@ -520,7 +604,7 @@ $('googleBtn').addEventListener('click', async () => {
     } else {
       showAlert(friendlyError(err), 'error');
     }
-    authFlowInProgress = false;
+    endManualFlow();
     setBusy(false);
   }
 });
@@ -551,20 +635,28 @@ $('authForm').addEventListener('submit', async e => {
     return;
   }
 
-  authFlowInProgress = true;
+  beginManualFlow();
   setBusy(true);
   try {
+    let user = null;
     if (mode === 'signup') {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
-      await updateProfile(cred.user, { displayName: fullName });
-      await saveUserProfileToRTDB(cred.user, { displayName: fullName, company });
+      user = cred.user;
+      updateProfile(user, { displayName: fullName }).catch(() => {});
+      saveUserProfileToRTDB(user, { displayName: fullName, company }).catch(() => {});
     } else {
       const cred = await signInWithEmailAndPassword(auth, email, password);
-      await saveUserProfileToRTDB(cred.user);
+      user = cred.user;
+      saveUserProfileToRTDB(user).catch(() => {});
     }
-    goHome();
+    if (user) {
+      scheduleGoHome();
+      return;
+    }
+    endManualFlow();
+    setBusy(false);
   } catch (err) {
-    authFlowInProgress = false;
+    endManualFlow();
     setBusy(false);
     showAlert(friendlyError(err), 'error');
   }
@@ -585,18 +677,31 @@ $('forgotBtn').addEventListener('click', async () => {
   }
 });
 
-getRedirectResult(auth).catch(err => {
-  $('authSplash').classList.add('hidden');
-  showAlert(friendlyError(err), 'error');
-});
+getRedirectResult(auth)
+  .then(res => {
+    if (res?.user) {
+      saveUserProfileToRTDB(res.user).catch(() => {});
+      goHome();
+    }
+  })
+  .catch(err => {
+    hideSplash();
+    setBusy(false);
+    showAlert(friendlyError(err), 'error');
+  });
 
-onAuthStateChanged(auth, async user => {
-  if (authFlowInProgress) return;
+onAuthStateChanged(auth, user => {
   if (user) {
-    try { await saveUserProfileToRTDB(user); } catch (e) {}
+    /* A click handler owns its own redirect while a sign-in is in flight. */
+    if (manualFlow) return;
+    /* Always release the page: a slow RTDB write must not block navigation. */
+    saveUserProfileToRTDB(user).catch(() => {});
     goHome();
   } else {
-    $('authSplash').classList.add('hidden');
+    endManualFlow();
+    hideSplash();
+    setBusy(false);
+    clearRedirectGuard();
   }
 });
 </script>
