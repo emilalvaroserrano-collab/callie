@@ -56,3 +56,54 @@ vercel --prod
 ```
 
 Production: <https://csragent.vercel.app>
+
+## WhatsApp call reports
+
+After a call finishes, CSR Studio can send a transcript summary to the agent owner's
+WhatsApp. This requires a small Baileys bridge that runs as a separate long-lived
+service (Vercel cannot host the persistent WhatsApp socket). The bridge is provided
+in `whatsapp-service/` and ships with a Dockerfile.
+
+### Environment variables
+
+Add these to Vercel (and to the bridge's `.env`):
+
+| Variable | Purpose |
+| --- | --- |
+| `WHATSAPP_SERVICE_URL` | Public HTTPS URL of the Baileys bridge (no trailing slash) |
+| `WHATSAPP_SERVICE_SECRET` | Shared secret between Next.js and the bridge (>= 16 chars) |
+
+### Run the bridge with Docker
+
+```bash
+cp whatsapp-service/.env.example whatsapp-service/.env
+# set WHATSAPP_SERVICE_SECRET to the same value used in Vercel
+openssl rand -hex 32  # paste into both .env files
+
+docker compose up -d --build
+```
+
+The compose file binds the service to `127.0.0.1:8080`. For Vercel to reach it,
+expose it through a reverse proxy (Caddy, Nginx, or a tunnel) and set
+`WHATSAPP_SERVICE_URL` to that public HTTPS URL. Example Caddyfile:
+
+```caddy
+whatsapp.example.com {
+  reverse_proxy 127.0.0.1:8080
+}
+```
+
+Auth state is persisted in the `whatsapp_data` Docker volume, so linked sessions
+survive container restarts.
+
+### How it works
+
+- `app/api/whatsapp/session` — verifies the Firebase ID token, then proxies to
+  the bridge (QR or pairing-code link, status, disconnect, logout).
+- `app/api/whatsapp/send` — sends an arbitrary message through the linked account.
+- `app/api/whatsapp/report` — builds a call summary server-side from call metadata
+  and the transcript, then sends it. The master system prompt is never involved.
+- `components/StudioApp.js` — WhatsApp card in the studio with status, modal, auto-send
+  toggle, optional destination number, and a test action. On `call-end`, a summary is
+  sent when auto-send is enabled and the call connected.
+EOF

@@ -51,6 +51,16 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
     let authRedirecting = false;
     let disposed = false;
 
+    /* ---------- WhatsApp reports ---------- */
+    const WA_SETTINGS_KEY = 'alex-whatsapp-reports-v1';
+    let waSettings = { autoSend: true, destination: '' };
+    let waSession = null;
+    let waConfigured = false;
+    let waPollTimer = null;
+    let waModalOpen = false;
+    let waConnecting = false;
+    let waStartedAtIso = null;
+
     const makeId = () =>
       window.crypto?.randomUUID?.() || `p-${Date.now()}-${Math.floor(Math.random() * 1e8)}`;
 
@@ -572,6 +582,7 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       client.on('call-start', () => {
         if (!isCurrent()) return;
         startedAt = Date.now();
+        waStartedAtIso = new Date(startedAt).toISOString();
         finalDuration = 0;
         updateTimer();
         clearInterval(interval);
@@ -582,11 +593,43 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
         if (!isCurrent()) return;
         partial = null;
         renderTranscript();
+        const callStarted = startedAt;
+        const callStartedIso = waStartedAtIso;
+        const callDuration = callStarted
+          ? Math.max(0, Math.floor((Date.now() - callStarted) / 1000))
+          : finalDuration;
+        const callPersona = activePersona
+          ? (typeof structuredClone === 'function'
+              ? structuredClone(activePersona)
+              : JSON.parse(JSON.stringify(activePersona)))
+          : lastPersona || null;
+        const callTranscript = transcript.map((line) => ({
+          role: line.role,
+          text: line.text,
+          at: line.at
+        }));
+        const callId = sessionId;
+        const shouldReport = Boolean(callStarted) && !!callPersona;
         if (startedAt) updateTimer();
         startedAt = null;
+        waStartedAtIso = null;
         speaking = false;
         setCallState('idle', 'Call ended');
         showToast('Call ended. Transcript is available locally.');
+        if (shouldReport) {
+          sendCallSummary({
+            persona: {
+              name: callPersona.name,
+              company: callPersona.company
+            },
+            callId,
+            durationSeconds: callDuration,
+            startedAt: callStartedIso || new Date(Date.now() - callDuration * 1000).toISOString(),
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            destination: waSettings.destination,
+            transcript: callTranscript
+          }).catch(() => {});
+        }
       });
       client.on('speech-start', () => {
         if (!isCurrent()) return;
@@ -890,6 +933,7 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       updateClock();
       clockInterval = setInterval(updateClock, 30_000);
       setCallState('idle');
+      initWhatsApp().catch(() => {});
     }
 
     const onProfilesChange = (event) => {
@@ -1009,6 +1053,354 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       window.location.replace(AUTH_URL);
     };
 
+    /* ---------- WhatsApp helpers ---------- */
+    function waNormalizePhone(value) {
+      return (value || '').replace(/[^\d+]/g, '').trim();
+    }
+
+    function loadWaSettings() {
+      try {
+        const data = JSON.parse(localStorage.getItem(WA_SETTINGS_KEY) || 'null');
+        if (data && typeof data === 'object') {
+          waSettings = {
+            autoSend: data.autoSend !== false,
+            destination: typeof data.destination === 'string' ? data.destination : ''
+          };
+        }
+      } catch (error) {}
+      const auto = $('waAutoSend');
+      if (auto) auto.checked = waSettings.autoSend;
+      const dest = $('waDestination');
+      if (dest) dest.value = waSettings.destination;
+    }
+
+    function saveWaSettings() {
+      waSettings.autoSend = !!$('waAutoSend')?.checked;
+      waSettings.destination = ($('waDestination')?.value || '').trim();
+      try {
+        localStorage.setItem(WA_SETTINGS_KEY, JSON.stringify(waSettings));
+      } catch (error) {}
+    }
+
+    function setWaDot(state) {
+      const dot = $('waDot');
+      if (!dot) return;
+      dot.classList.remove('connected', 'connecting', 'off');
+      dot.classList.add(state);
+    }
+
+    function updateWaUI() {
+      const statusText = $('waStatusText');
+      const connectBtn = $('waConnect');
+      const disconnectBtn = $('waDisconnect');
+      const testBtn = $('waTest');
+      const note = $('waNote');
+      const session = waSession;
+
+      if (!waConfigured) {
+        if (statusText) statusText.textContent = 'WhatsApp service not configured';
+        setWaDot('off');
+        if (connectBtn) connectBtn.textContent = 'Connect WhatsApp';
+        if (disconnectBtn) disconnectBtn.hidden = true;
+        if (testBtn) testBtn.hidden = true;
+        if (note) note.textContent = 'Set WHATSAPP_SERVICE_URL and WHATSAPP_SERVICE_SECRET on the server to enable reports.';
+        return;
+      }
+
+      if (!session) {
+        if (statusText) statusText.textContent = 'Not connected';
+        setWaDot('off');
+        if (connectBtn) connectBtn.textContent = 'Connect WhatsApp';
+        if (disconnectBtn) disconnectBtn.hidden = true;
+        if (testBtn) testBtn.hidden = true;
+        return;
+      }
+
+      const status = session.status || 'disconnected';
+      if (status === 'connected') {
+        const phone = session.phone ? `+${session.phone}` : 'your WhatsApp';
+        if (statusText) statusText.textContent = `Connected · ${phone}`;
+        setWaDot('connected');
+        if (connectBtn) connectBtn.hidden = true;
+        if (disconnectBtn) disconnectBtn.hidden = false;
+        if (testBtn) testBtn.hidden = false;
+      } else if (status === 'awaiting_qr' || status === 'awaiting_code' || status === 'connecting') {
+        if (statusText) statusText.textContent = 'Waiting for link…';
+        setWaDot('connecting');
+        if (connectBtn) {
+          connectBtn.hidden = false;
+          connectBtn.textContent = 'Connect WhatsApp';
+        }
+        if (disconnectBtn) disconnectBtn.hidden = true;
+        if (testBtn) testBtn.hidden = true;
+      } else {
+        if (statusText) statusText.textContent = session.lastError || 'Not connected';
+        setWaDot('off');
+        if (connectBtn) {
+          connectBtn.hidden = false;
+          connectBtn.textContent = 'Connect WhatsApp';
+        }
+        if (disconnectBtn) disconnectBtn.hidden = true;
+        if (testBtn) testBtn.hidden = true;
+      }
+    }
+
+    async function waFetchSession() {
+      try {
+        const token = await fbAuth.currentUser?.getIdToken();
+        if (!token) return null;
+        const response = await fetch('/api/whatsapp/session', {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store'
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          waConfigured = response.status !== 503;
+          if (response.status === 503) waConfigured = false;
+          updateWaUI();
+          return null;
+        }
+        waConfigured = data.configured !== false;
+        if (data.session) waSession = data.session;
+        updateWaUI();
+        return data.session || null;
+      } catch (error) {
+        updateWaUI();
+        return null;
+      }
+    }
+
+    async function waConnect(method, phone) {
+      if (waConnecting) return;
+      waConnecting = true;
+      const connectBtn = $('waConnect');
+      if (connectBtn) connectBtn.disabled = true;
+      try {
+        const token = await fbAuth.currentUser?.getIdToken();
+        if (!token) throw new Error('Your session expired. Please sign in again.');
+        const response = await fetch('/api/whatsapp/session', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ action: 'connect', method, phone })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          showToast(data?.error || 'Unable to connect WhatsApp.', true);
+          updateWaUI();
+          return null;
+        }
+        waConfigured = data.configured !== false;
+        if (data.session) waSession = data.session;
+        updateWaUI();
+        updateWaModal();
+        return data.session || null;
+      } catch (error) {
+        showToast(String(error?.message || error).slice(0, 160), true);
+        return null;
+      } finally {
+        waConnecting = false;
+        if (connectBtn) connectBtn.disabled = false;
+      }
+    }
+
+    async function waDisconnect() {
+      try {
+        const token = await fbAuth.currentUser?.getIdToken();
+        if (!token) return;
+        await fetch('/api/whatsapp/session', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ action: 'disconnect' })
+        });
+        await waFetchSession();
+      } catch (error) {
+        showToast('Unable to disconnect WhatsApp.', true);
+      }
+    }
+
+    async function waLogout() {
+      try {
+        const token = await fbAuth.currentUser?.getIdToken();
+        if (!token) return;
+        await fetch('/api/whatsapp/session', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ action: 'logout' })
+        });
+        waSession = null;
+        updateWaUI();
+        closeWaModal();
+      } catch (error) {
+        showToast('Unable to log out of WhatsApp.', true);
+      }
+    }
+
+    async function sendCallSummary(payload) {
+      if (!waSettings.autoSend) return;
+      try {
+        const token = await fbAuth.currentUser?.getIdToken();
+        if (!token) return;
+        const response = await fetch('/api/whatsapp/report', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          showToast(data?.error || 'Call ended. WhatsApp summary could not be sent.', true);
+          return;
+        }
+        showToast('Call ended. Summary sent to WhatsApp.');
+      } catch (error) {
+        showToast('Call ended. WhatsApp summary could not be sent.', true);
+      }
+    }
+
+    function openWaModal() {
+      waModalOpen = true;
+      const modal = $('waModal');
+      if (!modal) return;
+      modal.classList.add('open');
+      modal.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('wa-modal-open');
+      switchWaTab('qr');
+      updateWaModal();
+      if (!waSession || waSession.status === 'disconnected' || waSession.status === 'error') {
+        waConnect('qr', '');
+      }
+      startWaPolling();
+    }
+
+    function closeWaModal() {
+      waModalOpen = false;
+      const modal = $('waModal');
+      if (!modal) return;
+      modal.classList.remove('open');
+      modal.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('wa-modal-open');
+      stopWaPolling();
+    }
+
+    function switchWaTab(tab) {
+      const qrTab = $('waTabQr');
+      const codeTab = $('waTabCode');
+      const qrPane = $('waQrPane');
+      const codePane = $('waCodePane');
+      const isQr = tab === 'qr';
+      if (qrTab) {
+        qrTab.classList.toggle('active', isQr);
+        qrTab.setAttribute('aria-selected', String(isQr));
+      }
+      if (codeTab) {
+        codeTab.classList.toggle('active', !isQr);
+        codeTab.setAttribute('aria-selected', String(!isQr));
+      }
+      if (qrPane) qrPane.hidden = !isQr;
+      if (codePane) codePane.hidden = isQr;
+    }
+
+    function updateWaModal() {
+      const status = $('waModalStatus');
+      const qrImage = $('waQrImage');
+      const placeholder = $('waQrPlaceholder');
+      const codeBox = $('waCodeBox');
+      const pairingCode = $('waPairingCode');
+      const cancelBtn = $('waCancel');
+
+      const session = waSession;
+      if (!session) {
+        if (status) status.textContent = waConfigured ? 'Preparing…' : 'WhatsApp service not configured.';
+        if (placeholder) placeholder.textContent = waConfigured ? 'Starting…' : 'Not configured';
+        if (qrImage) qrImage.hidden = true;
+        if (codeBox) codeBox.hidden = true;
+        if (cancelBtn) cancelBtn.hidden = true;
+        return;
+      }
+
+      if (session.status === 'connected') {
+        if (status) status.textContent = 'Connected successfully.';
+        if (placeholder) placeholder.textContent = 'Connected';
+        if (qrImage) qrImage.hidden = true;
+        if (codeBox) codeBox.hidden = true;
+        if (cancelBtn) cancelBtn.hidden = true;
+        window.setTimeout(() => {
+          if (waModalOpen) closeWaModal();
+        }, 1200);
+        return;
+      }
+
+      if (session.qr) {
+        if (qrImage) {
+          qrImage.src = session.qr;
+          qrImage.hidden = false;
+        }
+        if (placeholder) placeholder.hidden = true;
+      } else {
+        if (qrImage) qrImage.hidden = true;
+        if (placeholder) {
+          placeholder.hidden = false;
+          placeholder.textContent = session.lastError || 'Waiting for QR code…';
+        }
+      }
+
+      if (session.pairingCode) {
+        if (codeBox) codeBox.hidden = false;
+        if (pairingCode) {
+          const code = session.pairingCode;
+          pairingCode.textContent =
+            code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+        }
+      }
+
+      if (status) {
+        if (session.status === 'awaiting_qr') status.textContent = 'Scan the QR code with WhatsApp.';
+        else if (session.status === 'awaiting_code') status.textContent = 'Enter the code in WhatsApp.';
+        else if (session.status === 'connecting') status.textContent = 'Connecting…';
+        else if (session.lastError) status.textContent = session.lastError;
+        else status.textContent = '';
+      }
+
+      const waiting = session.status === 'awaiting_qr' || session.status === 'awaiting_code' || session.status === 'connecting';
+      if (cancelBtn) cancelBtn.hidden = !waiting;
+    }
+
+    function startWaPolling() {
+      stopWaPolling();
+      waPollTimer = setInterval(async () => {
+        if (!waModalOpen) return;
+        await waFetchSession();
+        updateWaModal();
+        const session = waSession;
+        if (session && session.status === 'connected') {
+          stopWaPolling();
+        }
+      }, 2000);
+    }
+
+    function stopWaPolling() {
+      if (waPollTimer) {
+        clearInterval(waPollTimer);
+        waPollTimer = null;
+      }
+    }
+
+    async function initWhatsApp() {
+      loadWaSettings();
+      await waFetchSession();
+    }
+
     $('profiles').addEventListener('change', onProfilesChange);
     $('addProfile').addEventListener('click', onAddProfile);
     $('deleteProfile').addEventListener('click', onDeleteProfile);
@@ -1026,6 +1418,57 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
     $('downloadTranscript').addEventListener('click', downloadTranscript);
     $('clearTranscript').addEventListener('click', onClearTranscript);
     $('signOutBtn').addEventListener('click', onSignOut);
+    $('waConnect')?.addEventListener('click', () => openWaModal());
+    $('waDisconnect')?.addEventListener('click', () => waLogout());
+    $('waTest')?.addEventListener('click', async () => {
+      try {
+        const token = await fbAuth.currentUser?.getIdToken();
+        if (!token) return;
+        const response = await fetch('/api/whatsapp/send', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            text: '*CSR Studio test message*\\nYour WhatsApp reports are connected. Call summaries will arrive here after each call.',
+            to: waSettings.destination
+          })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          showToast(data?.error || 'Test message failed.', true);
+          return;
+        }
+        showToast('Test message sent to WhatsApp.');
+      } catch (error) {
+        showToast('Test message failed.', true);
+      }
+    });
+    $('waAutoSend')?.addEventListener('change', saveWaSettings);
+    $('waDestination')?.addEventListener('change', saveWaSettings);
+    $('waModalClose')?.addEventListener('click', closeWaModal);
+    $('waCancel')?.addEventListener('click', async () => {
+      if (waSession && (waSession.status === 'awaiting_qr' || waSession.status === 'awaiting_code' || waSession.status === 'connecting')) {
+        await waDisconnect();
+      }
+      closeWaModal();
+    });
+    document.querySelectorAll('[data-wa-close="true"]').forEach((el) =>
+      el.addEventListener('click', closeWaModal)
+    );
+    $('waTabQr')?.addEventListener('click', () => switchWaTab('qr'));
+    $('waTabCode')?.addEventListener('click', () => switchWaTab('code'));
+    $('waGetCode')?.addEventListener('click', async () => {
+      const phone = ($('waPhone')?.value || '').trim();
+      const btn = $('waGetCode');
+      if (btn) btn.disabled = true;
+      await waConnect('code', phone);
+      if (btn) btn.disabled = false;
+    });
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && waModalOpen) closeWaModal();
+    });
     window.addEventListener('beforeunload', onBeforeUnload);
 
     const unsubscribe = onAuthStateChanged(fbAuth, (user) => {
@@ -1047,6 +1490,8 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       clearInterval(interval);
       clearInterval(clockInterval);
       clearTimeout(toastTimer);
+      stopWaPolling();
+      document.body.classList.remove('wa-modal-open');
       closeRingAudio();
       try {
         if (vapi && callState === 'connected') vapi.stop();
@@ -1336,6 +1781,58 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
                 </div>
                 <div className="save-status" id="saveStatus" aria-live="polite" />
               </div>
+
+              <section className="wa-card" aria-labelledby="waHeading">
+                <div className="wa-head">
+                  <span className="wa-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z" />
+                    </svg>
+                  </span>
+                  <div className="wa-head-text">
+                    <div className="wa-title" id="waHeading">
+                      WhatsApp call reports
+                    </div>
+                    <div className="wa-sub" id="waStatusText">
+                      Checking connection…
+                    </div>
+                  </div>
+                  <span className="wa-dot" id="waDot" aria-hidden="true" />
+                </div>
+
+                <label className="wa-toggle">
+                  <input type="checkbox" id="waAutoSend" defaultChecked />
+                  <span>Send a summary after every call</span>
+                </label>
+
+                <div className="wa-field">
+                  <label htmlFor="waDestination">
+                    Destination number <span className="wa-optional">(optional)</span>
+                  </label>
+                  <input
+                    id="waDestination"
+                    inputMode="tel"
+                    autoComplete="tel"
+                    placeholder="Leave blank to message yourself"
+                  />
+                </div>
+
+                <div className="wa-actions">
+                  <button className="wa-btn" id="waConnect" type="button">
+                    Connect WhatsApp
+                  </button>
+                  <button className="wa-btn ghost" id="waDisconnect" type="button" hidden>
+                    Disconnect
+                  </button>
+                  <button className="wa-btn ghost" id="waTest" type="button" hidden>
+                    Send test
+                  </button>
+                </div>
+                <p className="wa-note" id="waNote">
+                  After each finished call, the agent sends a transcript summary to your WhatsApp.
+                  Nothing is shared with third parties.
+                </p>
+              </section>
             </div>
           </section>
 
@@ -1524,6 +2021,92 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
           </section>
         </main>
       </div>
+      <div
+        className="wa-modal"
+        id="waModal"
+        aria-hidden="true"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="waModalTitle"
+      >
+        <div className="wa-modal-backdrop" data-wa-close="true" />
+        <div className="wa-modal-card">
+          <button
+            className="wa-modal-close"
+            id="waModalClose"
+            type="button"
+            aria-label="Close"
+          >
+            ×
+          </button>
+          <h2 id="waModalTitle">Connect your WhatsApp</h2>
+          <p className="wa-modal-desc">
+            Scan the QR code with WhatsApp on your phone, or link your number with a code.
+          </p>
+
+          <div className="wa-tabs" role="tablist">
+            <button
+              className="wa-tab active"
+              id="waTabQr"
+              type="button"
+              role="tab"
+              aria-selected="true"
+            >
+              QR code
+            </button>
+            <button
+              className="wa-tab"
+              id="waTabCode"
+              type="button"
+              role="tab"
+              aria-selected="false"
+            >
+              Phone code
+            </button>
+          </div>
+
+          <div className="wa-pane" id="waQrPane">
+            <div className="wa-qr-box">
+              <img id="waQrImage" alt="WhatsApp QR code" hidden />
+              <div className="wa-qr-placeholder" id="waQrPlaceholder">
+                Starting…
+              </div>
+            </div>
+            <ol className="wa-steps">
+              <li>Open WhatsApp on your phone.</li>
+              <li>
+                Tap <strong>Settings → Linked devices → Link a device</strong>.
+              </li>
+              <li>Point your phone at this screen to scan the code.</li>
+            </ol>
+          </div>
+
+          <div className="wa-pane" id="waCodePane" hidden>
+            <div className="wa-field">
+              <label htmlFor="waPhone">WhatsApp number</label>
+              <input
+                id="waPhone"
+                inputMode="tel"
+                autoComplete="tel"
+                placeholder="+1 555 000 0000"
+              />
+            </div>
+            <button className="wa-btn" id="waGetCode" type="button">
+              Get link code
+            </button>
+            <div className="wa-code-box" id="waCodeBox" hidden>
+              <span>Enter this code in WhatsApp → Linked devices → Link with phone number</span>
+              <strong id="waPairingCode">----</strong>
+            </div>
+          </div>
+
+          <div className="wa-modal-status" id="waModalStatus" aria-live="polite" />
+          <button className="wa-btn ghost" id="waCancel" type="button" hidden>
+            Cancel
+          </button>
+        </div>
+      </div>
+
       <div className="toast" id="toast" role="status" aria-live="polite" />
       <div
         className="create-overlay"

@@ -1,0 +1,20 @@
+{
+  "name": "csr-whatsapp-service",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Baileys bridge that links a personal WhatsApp number and sends CSR call summaries.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "express": "5.3.0",
+    "pino": "10.4.0",
+    "qrcode": "1.5.4"
+  }
+}
