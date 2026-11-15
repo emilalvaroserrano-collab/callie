@@ -55,6 +55,10 @@ function requireUid(req) {
   return uid;
 }
 
+app.get('/', (req, res) => {
+  res.type('text/plain').send('WhatsApp Server Running Successfully');
+});
+
 app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), ...serviceSnapshot() });
 });
