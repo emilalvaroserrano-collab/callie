@@ -1471,6 +1471,20 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       }
     }
 
+    function updateGoogleServiceDot(dotId, statusId, connected, configured) {
+      const dot = $(dotId);
+      const st = $(statusId);
+      if (dot) {
+        dot.classList.remove('connected', 'connecting', 'off');
+        dot.classList.add(connected ? 'connected' : 'off');
+      }
+      if (!configured) {
+        if (st) st.textContent = 'OAuth not configured';
+        return;
+      }
+      if (st) st.textContent = connected ? `Connected · ${gmailEmail || 'Google'}` : 'Not connected';
+    }
+
     function updateGmailUI() {
       const statusText = $('gmailStatusText');
       const connectBtn = $('gmailConnect');
@@ -1484,9 +1498,7 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
         if (statusText) statusText.textContent = 'Gmail OAuth not configured';
         if (connectBtn) connectBtn.hidden = true;
         if (disconnectBtn) disconnectBtn.hidden = true;
-        return;
-      }
-      if (gmailConnected) {
+      } else if (gmailConnected) {
         if (statusText) statusText.textContent = `Connected · ${gmailEmail || 'Gmail'}`;
         if (connectBtn) connectBtn.hidden = true;
         if (disconnectBtn) disconnectBtn.hidden = false;
@@ -1498,6 +1510,14 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
         }
         if (disconnectBtn) disconnectBtn.hidden = true;
       }
+
+      // Mirror status to the other Google service cards.
+      updateGoogleServiceDot('gdriveDot', 'gdriveStatusText', gmailConnected, gmailConfigured);
+      updateGoogleServiceDot('gsheetsDot', 'gsheetsStatusText', gmailConnected, gmailConfigured);
+      updateGoogleServiceDot('gdocsDot', 'gdocsStatusText', gmailConnected, gmailConfigured);
+      updateGoogleServiceDot('gslidesDot', 'gslidesStatusText', gmailConnected, gmailConfigured);
+      updateGoogleServiceDot('gcalDot', 'gcalStatusText', gmailConnected, gmailConfigured);
+      updateGoogleServiceDot('gcontactsDot', 'gcontactsStatusText', gmailConnected, gmailConfigured);
     }
 
     async function gmailConnect() {
@@ -1588,6 +1608,10 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
 
     $('gmailConnect')?.addEventListener('click', () => gmailConnect());
     $('gmailDisconnect')?.addEventListener('click', () => gmailDisconnect());
+    ['gdrive', 'gsheets', 'gdocs', 'gslides', 'gcal', 'gcontacts'].forEach((svc) => {
+      const btn = $(`${svc}Disconnect`);
+      if (btn) btn.addEventListener('click', () => gmailDisconnect());
+    });
     $('waGetCode')?.addEventListener('click', async () => {
       const phone = ($('waPhone')?.value || '').trim();
       const btn = $('waGetCode');
@@ -2001,6 +2025,108 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
                   <button className="wa-btn ghost" id="gmailDisconnect" type="button" hidden>
                     Disconnect
                   </button>
+                </div>
+              </section>
+
+              <section className="wa-card" aria-labelledby="gdriveHeading">
+                <div className="wa-head">
+                  <span className="wa-icon" aria-hidden="true" style={{ background: '#1a2a3a', color: '#4285f4' }}>
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.71 3.5L1.15 15l4.58 7.94 6.56-11.5L7.71 3.5zm8.58 0H9.42l6.56 11.5h6.86L16.29 3.5zM8.58 16l-3.43 6h13.7l3.43-6H8.58z"/></svg>
+                  </span>
+                  <div className="wa-head-text">
+                    <div className="wa-title" id="gdriveHeading">Google Drive</div>
+                    <div className="wa-sub" id="gdriveStatusText">Checking connection…</div>
+                  </div>
+                  <span className="wa-dot" id="gdriveDot" aria-hidden="true" />
+                </div>
+                <p className="wa-note">Manage files and folders in Google Drive during calls.</p>
+                <div className="wa-actions">
+                  <button className="wa-btn ghost" id="gdriveDisconnect" type="button" hidden>Disconnect</button>
+                </div>
+              </section>
+
+              <section className="wa-card" aria-labelledby="gsheetsHeading">
+                <div className="wa-head">
+                  <span className="wa-icon" aria-hidden="true" style={{ background: '#1a2a1a', color: '#0f9d58' }}>
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+                  </span>
+                  <div className="wa-head-text">
+                    <div className="wa-title" id="gsheetsHeading">Google Sheets</div>
+                    <div className="wa-sub" id="gsheetsStatusText">Checking connection…</div>
+                  </div>
+                  <span className="wa-dot" id="gsheetsDot" aria-hidden="true" />
+                </div>
+                <p className="wa-note">Read and write spreadsheet data during calls.</p>
+                <div className="wa-actions">
+                  <button className="wa-btn ghost" id="gsheetsDisconnect" type="button" hidden>Disconnect</button>
+                </div>
+              </section>
+
+              <section className="wa-card" aria-labelledby="gdocsHeading">
+                <div className="wa-head">
+                  <span className="wa-icon" aria-hidden="true" style={{ background: '#1a1a3a', color: '#4285f4' }}>
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+                  </span>
+                  <div className="wa-head-text">
+                    <div className="wa-title" id="gdocsHeading">Google Docs</div>
+                    <div className="wa-sub" id="gdocsStatusText">Checking connection…</div>
+                  </div>
+                  <span className="wa-dot" id="gdocsDot" aria-hidden="true" />
+                </div>
+                <p className="wa-note">Create and edit documents during calls.</p>
+                <div className="wa-actions">
+                  <button className="wa-btn ghost" id="gdocsDisconnect" type="button" hidden>Disconnect</button>
+                </div>
+              </section>
+
+              <section className="wa-card" aria-labelledby="gslidesHeading">
+                <div className="wa-head">
+                  <span className="wa-icon" aria-hidden="true" style={{ background: '#3a1a1a', color: '#f4b400' }}>
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 14H6v-2h12v2zm0-4H6v-2h12v2zm0-4H6V7h12v2z"/></svg>
+                  </span>
+                  <div className="wa-head-text">
+                    <div className="wa-title" id="gslidesHeading">Google Slides</div>
+                    <div className="wa-sub" id="gslidesStatusText">Checking connection…</div>
+                  </div>
+                  <span className="wa-dot" id="gslidesDot" aria-hidden="true" />
+                </div>
+                <p className="wa-note">Create and read presentations during calls.</p>
+                <div className="wa-actions">
+                  <button className="wa-btn ghost" id="gslidesDisconnect" type="button" hidden>Disconnect</button>
+                </div>
+              </section>
+
+              <section className="wa-card" aria-labelledby="gcalHeading">
+                <div className="wa-head">
+                  <span className="wa-icon" aria-hidden="true" style={{ background: '#1a2a3a', color: '#4285f4' }}>
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11zm-7-9h-2v2h2v-2zm4 0h-2v2h2v-2zm-8 4h-2v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z"/></svg>
+                  </span>
+                  <div className="wa-head-text">
+                    <div className="wa-title" id="gcalHeading">Google Calendar</div>
+                    <div className="wa-sub" id="gcalStatusText">Checking connection…</div>
+                  </div>
+                  <span className="wa-dot" id="gcalDot" aria-hidden="true" />
+                </div>
+                <p className="wa-note">List and create calendar events during calls.</p>
+                <div className="wa-actions">
+                  <button className="wa-btn ghost" id="gcalDisconnect" type="button" hidden>Disconnect</button>
+                </div>
+              </section>
+
+              <section className="wa-card" aria-labelledby="gcontactsHeading">
+                <div className="wa-head">
+                  <span className="wa-icon" aria-hidden="true" style={{ background: '#3a2a1a', color: '#f4b400' }}>
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                  </span>
+                  <div className="wa-head-text">
+                    <div className="wa-title" id="gcontactsHeading">Google Contacts</div>
+                    <div className="wa-sub" id="gcontactsStatusText">Checking connection…</div>
+                  </div>
+                  <span className="wa-dot" id="gcontactsDot" aria-hidden="true" />
+                </div>
+                <p className="wa-note">List and manage contacts during calls.</p>
+                <div className="wa-actions">
+                  <button className="wa-btn ghost" id="gcontactsDisconnect" type="button" hidden>Disconnect</button>
                 </div>
               </section>
             </div>
