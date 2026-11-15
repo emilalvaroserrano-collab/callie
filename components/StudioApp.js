@@ -57,6 +57,7 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
     let waSettings = { autoSend: true, destination: '' };
     let waSession = null;
     let waConfigured = false;
+    let waReachable = true;
     let waPollTimer = null;
     let waModalOpen = false;
     let waConnecting = false;
@@ -1108,6 +1109,20 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
         return;
       }
 
+      if (!waReachable) {
+        if (statusText) statusText.textContent = 'WhatsApp service offline';
+        setWaDot('off');
+        if (connectBtn) {
+          connectBtn.hidden = false;
+          connectBtn.textContent = 'Retry connection';
+          connectBtn.disabled = false;
+        }
+        if (disconnectBtn) disconnectBtn.hidden = true;
+        if (testBtn) testBtn.hidden = true;
+        if (note) note.textContent = 'Start the Baileys bridge: docker compose up -d. Then retry.';
+        return;
+      }
+
       if (!session) {
         if (statusText) statusText.textContent = 'Not connected';
         setWaDot('off');
@@ -1158,14 +1173,17 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
         if (!response.ok) {
           waConfigured = response.status !== 503;
           if (response.status === 503) waConfigured = false;
+          waReachable = response.status !== 502 && response.status !== 504;
           updateWaUI();
           return null;
         }
         waConfigured = data.configured !== false;
+        waReachable = true;
         if (data.session) waSession = data.session;
         updateWaUI();
         return data.session || null;
       } catch (error) {
+        waReachable = false;
         updateWaUI();
         return null;
       }
@@ -1189,17 +1207,21 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
+          waReachable = response.status !== 502 && response.status !== 504;
           showToast(data?.error || 'Unable to connect WhatsApp.', true);
           updateWaUI();
           return null;
         }
         waConfigured = data.configured !== false;
+        waReachable = true;
         if (data.session) waSession = data.session;
         updateWaUI();
         updateWaModal();
         return data.session || null;
       } catch (error) {
+        waReachable = false;
         showToast(String(error?.message || error).slice(0, 160), true);
+        updateWaUI();
         return null;
       } finally {
         waConnecting = false;
