@@ -610,8 +610,9 @@ function goToAuth() {
     showGateError();
     return;
   }
-  const next = encodeURIComponent(location.pathname + location.search + location.hash);
-  window.location.replace(`${AUTH_URL}?next=${next}`);
+  const here = location.pathname + location.search + location.hash;
+  const target = here === '/' ? AUTH_URL : `${AUTH_URL}?next=${encodeURIComponent(here)}`;
+  window.location.replace(target);
 }
 
 $('signOutBtn').addEventListener('click',async()=>{

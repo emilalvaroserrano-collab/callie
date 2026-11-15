@@ -458,6 +458,7 @@ function goHome() {
   if (redirectCountExceeded()) {
     redirecting = false;
     hideSplash();
+    setBusy(false);
     showAlert('We could not confirm your session. Please sign in again. If this keeps happening, check that this domain is authorized in Firebase Authentication.', 'error');
     return;
   }
