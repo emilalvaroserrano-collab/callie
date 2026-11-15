@@ -29,16 +29,14 @@ export async function POST(request) {
   let gmailConnected = false;
   let gmailEmail = '';
   try {
-    const { getApp, getApps, initializeApp } = await import('firebase/app');
-    const { getDatabase, ref, get } = await import('firebase/database');
-    const { getFirebaseConfig } = await import('@/lib/server-config');
-    const firebaseConfig = getFirebaseConfig();
-    const fbApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
-    const db = getDatabase(fbApp);
-    const snap = await get(ref(db, `users/${auth.uid}/gmail`));
-    if (snap.exists()) {
-      gmailConnected = true;
-      gmailEmail = snap.val()?.email || '';
+    const { getAdminDb } = await import('@/lib/firebase-admin');
+    const db = getAdminDb();
+    if (db) {
+      const snap = await db.ref(`users/${auth.uid}/gmail`).get();
+      if (snap.exists()) {
+        gmailConnected = true;
+        gmailEmail = snap.val()?.email || '';
+      }
     }
   } catch (error) {}
 

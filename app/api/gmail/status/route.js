@@ -2,9 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { verifyFirebaseToken } from '@/lib/verify-token';
 import { getGoogleConfig } from '@/lib/gmail';
-import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getDatabase, ref, get } from 'firebase/database';
-import { getFirebaseConfig } from '@/lib/server-config';
+import { getAdminDb } from '@/lib/firebase-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,10 +18,11 @@ export async function GET(request) {
     return NextResponse.json({ configured: false, connected: false });
   }
 
-  const firebaseConfig = getFirebaseConfig();
-  const fbApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  const db = getDatabase(fbApp);
-  const snap = await get(ref(db, `users/${auth.uid}/gmail`));
+  const db = getAdminDb();
+  if (!db) {
+    return NextResponse.json({ configured: true, connected: false, error: 'Server database not configured.' });
+  }
+  const snap = await db.ref(`users/${auth.uid}/gmail`).get();
   if (!snap.exists()) {
     return NextResponse.json({ configured: true, connected: false });
   }

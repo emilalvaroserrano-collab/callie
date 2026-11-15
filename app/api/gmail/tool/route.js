@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getDatabase, ref, get } from 'firebase/database';
-import { getFirebaseConfig } from '@/lib/server-config';
+import { getAdminDb } from '@/lib/firebase-admin';
 import {
   deleteMessage,
   getProfile,
@@ -17,10 +15,9 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 async function getTokens(uid) {
-  const firebaseConfig = getFirebaseConfig();
-  const fbApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  const db = getDatabase(fbApp);
-  const snap = await get(ref(db, `users/${uid}/gmail`));
+  const db = getAdminDb();
+  if (!db) return null;
+  const snap = await db.ref(`users/${uid}/gmail`).get();
   if (!snap.exists()) return null;
   return snap.val();
 }
@@ -53,11 +50,7 @@ export async function POST(request) {
   try {
     let result;
     switch (name) {
-      case 'gmail_list_messages': {
-        const data = await listMessages(tokens, args.query || '', args.maxResults || 10);
-        result = data.messages.map((m) => `${m.id} | ${m.from} | ${m.subject} | ${m.date} | ${m.snippet}`).join('\n') || 'No messages found.';
-        break;
-      }
+      case 'gmail_list_messages':
       case 'gmail_search_messages': {
         const data = await listMessages(tokens, args.query || '', args.maxResults || 10);
         result = data.messages.map((m) => `${m.id} | ${m.from} | ${m.subject} | ${m.date} | ${m.snippet}`).join('\n') || 'No messages found.';
@@ -97,7 +90,6 @@ export async function POST(request) {
         result = `Unknown tool: ${name}`;
     }
 
-    // Vapi expects { result } in response
     return NextResponse.json({ result });
   } catch (err) {
     return NextResponse.json({ result: `Error: ${err?.message || 'Unknown error'}` });

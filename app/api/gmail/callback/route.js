@@ -1,9 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getDatabase, ref, update } from 'firebase/database';
-import { getFirebaseConfig } from '@/lib/server-config';
+import { getAdminDb } from '@/lib/firebase-admin';
 import { exchangeCode, getProfile, storeTokens } from '@/lib/gmail';
 
 export const runtime = 'nodejs';
@@ -29,10 +26,10 @@ export async function GET(request) {
     const profile = await getProfile(tokens).catch(() => null);
     const tokenData = storeTokens(null, tokens, profile);
 
-    const firebaseConfig = getFirebaseConfig();
-    const fbApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
-    const db = getDatabase(fbApp);
-    await update(ref(db, `users/${state}/gmail`), tokenData);
+    const db = getAdminDb();
+    if (db) {
+      await db.ref(`users/${state}/gmail`).set(tokenData);
+    }
 
     return NextResponse.redirect(`${appUrl}/?gmail=connected`);
   } catch (err) {

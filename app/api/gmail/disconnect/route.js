@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { verifyFirebaseToken } from '@/lib/verify-token';
-import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getDatabase, ref, remove } from 'firebase/database';
-import { getFirebaseConfig } from '@/lib/server-config';
+import { getAdminDb } from '@/lib/firebase-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -14,9 +12,9 @@ export async function POST(request) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
-  const firebaseConfig = getFirebaseConfig();
-  const fbApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  const db = getDatabase(fbApp);
-  await remove(ref(db, `users/${auth.uid}/gmail`));
+  const db = getAdminDb();
+  if (db) {
+    await db.ref(`users/${auth.uid}/gmail`).remove();
+  }
   return NextResponse.json({ ok: true });
 }
