@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "build": "node scripts/inject-env.mjs"
+    "build": "node scripts/inject-env.mjs",
+    "dev": "node scripts/inject-env.mjs"
   }
 }

@@ -381,17 +381,14 @@ import {
   serverTimestamp
 } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-database.js';
 
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = window.APP_CONFIG?.firebase || {
-  apiKey: "AIzaSyCHErUyhBxmwFpKJ4b7QaRmEYaiLm-rjDA",
-  authDomain: "csr-studio.firebaseapp.com",
-  databaseURL: "https://csr-studio-default-rtdb.firebaseio.com",
-  projectId: "csr-studio",
-  storageBucket: "csr-studio.firebasestorage.app",
-  messagingSenderId: "990796119326",
-  appId: "1:990796119326:web:f4a3df85569d4bd7e89d0f",
-  measurementId: "G-4YDHQGKD3P"
-};
+// Firebase config is generated at build time from environment variables
+// (see scripts/inject-env.mjs). Nothing is hardcoded here.
+const firebaseConfig = window.APP_CONFIG?.firebase;
+if (!firebaseConfig?.apiKey) {
+  const card = document.querySelector('.card');
+  if (card) card.innerHTML = '<h2>Configuration missing</h2><p style="margin-top:12px;line-height:1.6">Set the Firebase environment variables in Vercel, then redeploy.</p>';
+  throw new Error('Missing APP_CONFIG.firebase — run the build with the required environment variables.');
+}
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
