@@ -63,6 +63,408 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
     let waConnecting = false;
     let waStartedAtIso = null;
 
+    /* ---------- Facebook Pages + Messenger ---------- */
+    let facebookState = { configured: false, connected: false, pages: [], selectedPageId: '', autoReply: false };
+
+    async function facebookRequest(path, method = 'GET', body) {
+      const token = await fbAuth.currentUser?.getIdToken();
+      if (!token) throw new Error('Sign in again to manage Facebook Pages.');
+      const res = await fetch(`/api/facebook/${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        cache: 'no-store'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Facebook request failed.');
+      return data;
+    }
+
+    async function facebookFetchStatus() {
+      try {
+        facebookState = await facebookRequest('status');
+        facebookUpdateUI();
+        if (facebookState.selectedPageId) {
+          facebookLoadPosts().catch(() => {});
+          facebookLoadScheduled().catch(() => {});
+          facebookLoadInbox().catch(() => {});
+        }
+      } catch (error) {
+        $('facebookStatusText').textContent = error.message;
+      }
+    }
+
+    function facebookUpdateUI() {
+      const { connected, configured, pages = [], selectedPageId, autoReply, webhookSubscribed } = facebookState;
+      const page = pages.find(p => p.id === selectedPageId);
+      $('facebookDot').className = `wa-dot ${page ? 'connected' : 'off'}`;
+      $('facebookStatusText').textContent = !configured ? 'Meta OAuth not configured' :
+        page ? `Connected · ${page.name}` : connected ? `${pages.length} Pages available · select one` : 'Not connected';
+      $('facebookConnect').hidden = !configured;
+      $('facebookConnect').textContent = connected ? 'Reconnect Facebook' : 'Connect Facebook';
+      $('facebookDisconnect').hidden = !connected;
+      $('facebookControls').hidden = !connected;
+      $('facebookEditor').hidden = !page;
+      const select = $('facebookPageSelect');
+      select.replaceChildren(new Option('Select a Facebook Page', ''));
+      pages.forEach(p => select.appendChild(new Option(p.name, p.id)));
+      select.value = page?.id || '';
+      $('facebookAutoReply').checked = Boolean(autoReply);
+      $('facebookAutoReply').disabled = !page || !webhookSubscribed;
+      $('facebookPageInfo').textContent = page
+        ? `${page.name} is linked to this agent. Messenger webhook ${webhookSubscribed ? 'subscribed' : 'not subscribed'}.`
+        : pages.length ? 'Choose a Page that your Facebook account manages.' : 'No managed Pages returned by Meta. Check Page roles and permissions.';
+    }
+
+    async function facebookConnect() {
+      try {
+        const data = await facebookRequest('auth', 'POST');
+        window.location.assign(data.url);
+      } catch (error) { showToast(error.message, true); }
+    }
+
+    async function facebookSelectPage() {
+      const pageId = $('facebookPageSelect').value;
+      if (!pageId) return;
+      const select = $('facebookPageSelect');
+      select.disabled = true;
+      try {
+        await facebookRequest('select', 'POST', { pageId });
+        await facebookRequest('settings', 'POST', { persona: editorData() });
+        await facebookFetchStatus();
+        showToast('Facebook Page connected. Messenger auto-reply is opt-in.');
+      } catch (error) {
+        showToast(error.message, true);
+        await facebookFetchStatus();
+      } finally { select.disabled = false; }
+    }
+
+    async function facebookSyncPersona() {
+      if (!facebookState.selectedPageId) return;
+      try { await facebookRequest('settings', 'POST', { persona: selected() }); }
+      catch (error) { showToast(`Facebook persona sync: ${error.message}`, true); }
+    }
+
+    async function facebookToggleReply() {
+      const toggle = $('facebookAutoReply');
+      toggle.disabled = true;
+      try {
+        await facebookRequest('settings', 'POST', { autoReply: toggle.checked, persona: editorData() });
+        facebookState.autoReply = toggle.checked;
+        showToast(toggle.checked ? 'Messenger automatic replies enabled.' : 'Messenger automatic replies disabled.');
+      } catch (error) {
+        toggle.checked = !toggle.checked;
+        showToast(error.message, true);
+      } finally { toggle.disabled = false; }
+    }
+
+    async function facebookDisconnect() {
+      if (!confirm('Disconnect Facebook and disable Messenger automation?')) return;
+      try {
+        await facebookRequest('disconnect', 'POST');
+        await facebookFetchStatus();
+        $('facebookPosts').replaceChildren();
+        $('facebookInbox').replaceChildren();
+        showToast('Facebook disconnected.');
+      } catch (error) { showToast(error.message, true); }
+    }
+
+    async function facebookPublish() {
+      const message = $('facebookPostText').value.trim();
+      if (!message) return showToast('Write a Facebook post first.', true);
+      if (!confirm('Publish this content on your selected Facebook Page?')) return;
+      const button = $('facebookPublish');
+      button.disabled = true;
+      try {
+        await facebookRequest('posts', 'POST', { message });
+        $('facebookPostText').value = '';
+        showToast('Page post published.');
+        await facebookLoadPosts();
+      } catch (error) { showToast(error.message, true); }
+      finally { button.disabled = false; }
+    }
+
+    async function facebookSchedule() {
+      const message = $('facebookPostText').value.trim();
+      const value = $('facebookScheduleAt').value;
+      if (!message || !value) return showToast('Write a post and select a publish date/time.', true);
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return showToast('Choose a valid schedule time.', true);
+      const publishAt = parsed.toISOString();
+      if (!confirm(`Schedule this post to publish at ${new Date(publishAt).toLocaleString()}?`)) return;
+      try {
+        await facebookRequest('posts', 'POST', { message, publishAt });
+        $('facebookPostText').value = '';
+        showToast('Facebook post scheduled through Meta.');
+        await facebookLoadScheduled();
+      } catch (error) { showToast(error.message, true); }
+    }
+
+    async function facebookLoadScheduled() {
+      if (!facebookState.selectedPageId) return;
+      const target = $('facebookScheduledPosts');
+      target.textContent = 'Checking scheduled Page posts…';
+      try {
+        const { data: posts } = await facebookRequest('posts?scheduled=1');
+        target.replaceChildren();
+        if (!posts.length) target.textContent = 'No scheduled posts.';
+        for (const post of posts) {
+          const item = document.createElement('div'); item.className = 'fb-post';
+          const date = document.createElement('strong');
+          date.textContent = `Scheduled: ${new Date(Number(post.scheduled_publish_time) * 1000).toLocaleString()}`;
+          const caption = document.createElement('p'); caption.textContent = post.message || '(No caption)';
+          const cancel = document.createElement('button');
+          cancel.type = 'button'; cancel.className = 'wa-btn ghost'; cancel.textContent = 'Delete scheduled post';
+          cancel.addEventListener('click', async () => {
+            if (!confirm('Delete this scheduled Facebook Page post?')) return;
+            try {
+              await facebookRequest('posts', 'DELETE', { postId: post.id, confirm: true });
+              showToast('Scheduled post deleted.');
+              await facebookLoadScheduled();
+            } catch (error) { showToast(error.message, true); }
+          });
+          item.append(date, caption, cancel); target.appendChild(item);
+        }
+      } catch (error) { target.textContent = error.message; }
+    }
+
+    async function facebookLoadPosts() {
+      if (!facebookState.selectedPageId) return;
+      const target = $('facebookPosts');
+      target.textContent = 'Loading Page posts…';
+      try {
+        const { data: posts } = await facebookRequest('posts');
+        target.replaceChildren();
+        if (!posts.length) target.textContent = 'No recent Page posts found.';
+        for (const post of posts) {
+          const item = document.createElement('div');
+          item.className = 'fb-post';
+          const message = document.createElement('p');
+          message.textContent = post.message || '(Media post without a caption)';
+          const actions = document.createElement('div');
+          actions.className = 'wa-actions';
+          const edit = document.createElement('button');
+          edit.type = 'button'; edit.className = 'wa-btn ghost'; edit.textContent = 'Edit';
+          edit.addEventListener('click', async () => {
+            const newMessage = prompt('Edit Page post:', post.message || '');
+            if (newMessage === null || !newMessage.trim() || newMessage === post.message) return;
+            if (!confirm('Save the new text to your Facebook Page?')) return;
+            try {
+              await facebookRequest('posts', 'PATCH', { postId: post.id, message: newMessage });
+              showToast('Page post updated.');
+              await facebookLoadPosts();
+            } catch (error) { showToast(error.message, true); }
+          });
+          const del = document.createElement('button');
+          del.type = 'button'; del.className = 'wa-btn ghost'; del.textContent = 'Delete';
+          del.addEventListener('click', async () => {
+            if (!confirm('Permanently delete this Facebook Page post? This cannot be undone.')) return;
+            try {
+              await facebookRequest('posts', 'DELETE', { postId: post.id, confirm: true });
+              showToast('Page post deleted.');
+              await facebookLoadPosts();
+            } catch (error) { showToast(error.message, true); }
+          });
+          actions.append(edit, del);
+          if (post.permalink_url) {
+            const link = document.createElement('a');
+            link.href = post.permalink_url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+            link.textContent = 'View post'; link.className = 'fb-link';
+            actions.appendChild(link);
+          }
+          item.append(message, actions);
+          target.appendChild(item);
+        }
+      } catch (error) { target.textContent = error.message; }
+    }
+
+    async function facebookLoadInbox() {
+      if (!facebookState.selectedPageId) return;
+      const target = $('facebookInbox');
+      target.textContent = 'Loading Messenger conversations…';
+      try {
+        const { conversations } = await facebookRequest('inbox');
+        target.replaceChildren();
+        if (!conversations.length) target.textContent = 'No inbound text messages yet. Messenger threads appear after webhook delivery.';
+        for (const conversation of conversations) {
+          const item = document.createElement('div'); item.className = 'fb-post';
+          const heading = document.createElement('strong'); heading.textContent = `Messenger sender: ${conversation.senderId}`;
+          const preview = document.createElement('p');
+          preview.textContent = conversation.recent?.slice(-3).map(m => `${m.role}: ${m.text}`).join('\n') || '';
+          const reply = document.createElement('button');
+          reply.type = 'button'; reply.className = 'wa-btn ghost'; reply.textContent = 'Reply';
+          reply.addEventListener('click', async () => {
+            const text = prompt(`Reply to Messenger user ${conversation.senderId}:`);
+            if (!text?.trim()) return;
+            if (!confirm('Send this reply from your Facebook Page?')) return;
+            try {
+              await facebookRequest('reply', 'POST', { recipientId: conversation.senderId, message: text });
+              showToast('Messenger reply sent.');
+              await facebookLoadInbox();
+            } catch (error) { showToast(error.message, true); }
+          });
+          item.append(heading, preview, reply);
+          target.appendChild(item);
+        }
+      } catch (error) { target.textContent = error.message; }
+    }
+
+    /* ---------- Canva design workspace ---------- */
+    let canvaState = { configured: false, connected: false, scopes: [], previewGeneration: false };
+    let canvaNextDesigns = '';
+    let canvaLastExport = '';
+    let canvaLastGeneration = '';
+    async function canvaRequest(path, method = 'GET', body) {
+      const token = await fbAuth.currentUser?.getIdToken();
+      if (!token) throw new Error('Sign in to manage Canva.');
+      const response = await fetch(`/api/canva/${path}`, {
+        method, cache: 'no-store',
+        headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Canva request failed.');
+      return data.data === undefined ? data : data.data;
+    }
+    async function canvaFetchStatus() {
+      try {
+        canvaState = await canvaRequest('status');
+        $('canvaStatusText').textContent = !canvaState.configured ? 'Canva OAuth not configured' :
+          canvaState.connected ? `Connected${canvaState.name ? ` · ${canvaState.name}` : ''}` : 'Not connected';
+        $('canvaDot').className = `wa-dot ${canvaState.connected ? 'connected' : 'off'}`;
+        $('canvaConnect').hidden = !canvaState.configured;
+        $('canvaConnect').textContent = canvaState.connected ? 'Reconnect Canva' : 'Connect to Canva';
+        $('canvaDisconnect').hidden = !canvaState.connected;
+        $('canvaWorkspace').hidden = !canvaState.connected;
+        $('canvaGeneration').hidden = !canvaState.connected || !canvaState.previewGeneration;
+        $('canvaPermissionInfo').textContent = canvaState.connected
+          ? `${canvaState.scopes?.length || 0} OAuth scopes granted. The agent can only use supported APIs within your Canva permissions.`
+          : 'Access requires your Canva consent; advanced editing may require Canva MCP.';
+        if (canvaState.connected) await canvaLoadDesigns(false);
+        else { $('canvaDesignList').replaceChildren(); canvaNextDesigns = ''; }
+      } catch (error) { $('canvaStatusText').textContent = error.message; }
+    }
+    async function canvaConnect() {
+      try { const result = await canvaRequest('auth', 'POST'); window.location.assign(result.url); }
+      catch (error) { showToast(error.message, true); }
+    }
+    async function canvaDisconnect() {
+      if (!confirm('Disconnect Canva and revoke the agent’s access to your Canva account?')) return;
+      try { await canvaRequest('disconnect', 'POST'); await canvaFetchStatus(); showToast('Canva disconnected.'); }
+      catch (error) { showToast(error.message, true); }
+    }
+    function canvaSafeLink(url, label) {
+      let href;
+      try {
+        const target = new URL(url);
+        if (target.protocol !== 'https:' || !['canva.com', 'www.canva.com'].includes(target.hostname)) return null;
+        href = target.href;
+      } catch { return null; }
+      const a = document.createElement('a');
+      a.className = 'wa-btn ghost'; a.href = href; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      a.textContent = label;
+      return a;
+    }
+    async function canvaLoadDesigns(more = false) {
+      if (!canvaState.connected) return;
+      const list = $('canvaDesignList');
+      if (!more) { list.textContent = 'Loading Canva designs…'; canvaNextDesigns = ''; }
+      try {
+        const query = new URLSearchParams({ limit: '20', query: $('canvaSearch').value.trim() });
+        if (more && canvaNextDesigns) query.set('continuation', canvaNextDesigns);
+        const result = await canvaRequest(`designs?${query.toString()}`);
+        if (!more) list.replaceChildren();
+        if (!result.items?.length && !more) list.textContent = 'No designs found.';
+        for (const design of result.items || []) {
+          const item = document.createElement('div'); item.className = 'fb-post canva-design';
+          const heading = document.createElement('strong'); heading.textContent = design.title || 'Untitled design';
+          const subtitle = document.createElement('p');
+          subtitle.textContent = `${design.type || 'Design'}${design.updatedAt ? ` · Updated ${new Date(Number(design.updatedAt) * 1000).toLocaleDateString()}` : ''}`;
+          item.append(heading, subtitle);
+          const actions = document.createElement('div'); actions.className = 'wa-actions';
+          const edit = canvaSafeLink(design.editUrl, 'Open in Canva');
+          if (edit) actions.append(edit);
+          const exportBtn = document.createElement('button'); exportBtn.className = 'wa-btn ghost';
+          exportBtn.type = 'button'; exportBtn.textContent = 'Export';
+          exportBtn.addEventListener('click', () => canvaExportDesign(design.id));
+          actions.append(exportBtn); item.append(actions); list.append(item);
+        }
+        canvaNextDesigns = result.continuation || '';
+        $('canvaMoreDesigns').hidden = !canvaNextDesigns;
+      } catch (error) { showToast(error.message, true); if (!more) list.textContent = 'Unable to load designs.'; }
+    }
+    async function canvaCreateDesign() {
+      const title = $('canvaNewTitle').value.trim();
+      const type = $('canvaNewType').value;
+      if (!title) return showToast('Enter a Canva design title.', true);
+      const args = { title, type };
+      if (type === 'custom') { args.width = Number($('canvaWidth').value); args.height = Number($('canvaHeight').value); }
+      if (!confirm(`Create a new ${type} design in your connected Canva account?`)) return;
+      const btn = $('canvaCreate'); btn.disabled = true;
+      try {
+        const design = await canvaRequest('designs', 'POST', args);
+        showToast('Canva design created.');
+        $('canvaNewTitle').value = '';
+        const link = canvaSafeLink(design.editUrl, 'Open your new design in Canva');
+        const target = $('canvaLatestResult'); target.replaceChildren();
+        if (link) target.append(link);
+        await canvaLoadDesigns(false);
+      } catch (error) { showToast(error.message, true); }
+      finally { btn.disabled = false; }
+    }
+    async function canvaExportDesign(designId) {
+      const format = $('canvaExportFormat').value;
+      if (!confirm(`Export this Canva design as ${format.toUpperCase()}?`)) return;
+      try {
+        const result = await canvaRequest('exports', 'POST', { designId, format });
+        canvaLastExport = result.job?.id || '';
+        $('canvaExportResult').textContent = canvaLastExport ? `Export job ${canvaLastExport} created. Check its status below.` : 'Canva export request submitted.';
+        await canvaPollExport();
+      } catch (error) { showToast(error.message, true); }
+    }
+    async function canvaPollExport() {
+      if (!canvaLastExport) return;
+      try {
+        const job = await canvaRequest(`exports?id=${encodeURIComponent(canvaLastExport)}`);
+        const target = $('canvaExportResult'); target.replaceChildren();
+        const label = document.createElement('span'); label.textContent = `Export ${job.status || 'pending'}. `;
+        target.append(label);
+        if (job.status === 'success') {
+          for (const url of job.urls || []) {
+            // Download links are returned by Canva, typically on document-export.canva.com.
+            try {
+              const parsed = new URL(url);
+              if (parsed.protocol !== 'https:' || !parsed.hostname.endsWith('.canva.com')) continue;
+              const link = document.createElement('a'); link.href = parsed.href; link.target = '_blank';
+              link.rel = 'noopener noreferrer'; link.textContent = 'Download export'; target.append(link);
+            } catch {}
+          }
+        }
+      } catch (error) { showToast(error.message, true); }
+    }
+    async function canvaGenerateDesign() {
+      const brief = $('canvaBrief').value.trim(), type = $('canvaGenerationType').value;
+      if (!brief) return showToast('Describe the design you want to generate.', true);
+      if (!confirm('Use your Canva AI credit allowance to generate this design?')) return;
+      try {
+        const result = await canvaRequest('generations', 'POST', { brief, type });
+        canvaLastGeneration = result.job?.id || '';
+        $('canvaGenerationResult').textContent = canvaLastGeneration ? 'Generation started. Use Check result to view progress.' : 'Canva accepted the generation request.';
+      } catch (error) { showToast(error.message, true); }
+    }
+    async function canvaPollGeneration() {
+      if (!canvaLastGeneration) return showToast('Create a generation job first.', true);
+      try {
+        const result = await canvaRequest(`generations?id=${encodeURIComponent(canvaLastGeneration)}`);
+        const job = result.job || {};
+        const target = $('canvaGenerationResult'); target.replaceChildren();
+        const label = document.createElement('span'); label.textContent = `Generation: ${job.status || 'pending'}. `; target.append(label);
+        const design = job.design || job.result?.design;
+        const link = canvaSafeLink(design?.urls?.edit_url || design?.url, 'Open generated design');
+        if (link) target.append(link);
+      } catch (error) { showToast(error.message, true); }
+    }
+
     /* ---------- Gmail integration ---------- */
     let gmailConnected = false;
     let gmailEmail = '';
@@ -366,6 +768,7 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
         return;
       }
       profiles[index] = persona;
+      facebookSyncPersona().catch(() => {});
       const persisted = saveStore();
       dirty = false;
       renderProfileList();
@@ -942,6 +1345,8 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       setCallState('idle');
       initWhatsApp().catch(() => {});
       gmailFetchStatus().catch(() => {});
+      facebookFetchStatus().catch(() => {});
+      canvaFetchStatus().catch(() => {});
 
       // Handle Gmail OAuth callback redirect.
       try {
@@ -952,6 +1357,24 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
           showToast('Gmail connected successfully.');
         } else if (params.get('gmail') === 'error') {
           showToast(`Gmail connection failed: ${params.get('reason') || 'unknown error'}`, true);
+        }
+        if (params.has('facebook')) {
+          const result = params.get('facebook');
+          if (result === 'connected') showToast('Facebook authorized. Now select your Page.');
+          else if (result === 'no_pages') showToast('Facebook connected, but Meta returned no managed Pages.', true);
+          else showToast(`Facebook authentication failed: ${result}`, true);
+          facebookFetchStatus().catch(() => {});
+          const cleanUrl = new URL(location.href);
+          cleanUrl.searchParams.delete('facebook');
+          window.history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search);
+        }
+        if (params.has('canva')) {
+          const result = params.get('canva');
+          showToast(result === 'connected' ? 'Canva connected successfully.' : `Canva connection: ${result}`, result !== 'connected');
+          canvaFetchStatus().catch(() => {});
+          const cleanUrl = new URL(location.href);
+          cleanUrl.searchParams.delete('canva');
+          window.history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search);
         }
         if (params.has('gmail')) {
           const url = new URL(location.href);
@@ -970,6 +1393,7 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
       currentId = event.target.value;
       fillEditor(selected());
       saveStore();
+      facebookSyncPersona().catch(() => {});
     };
 
     const onAddProfile = () => {
@@ -1605,6 +2029,26 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
     $('waTabQr')?.addEventListener('click', () => switchWaTab('qr'));
     $('waTabCode')?.addEventListener('click', () => switchWaTab('code'));
 
+    $('facebookConnect')?.addEventListener('click', facebookConnect);
+    $('facebookDisconnect')?.addEventListener('click', facebookDisconnect);
+    $('facebookPageSelect')?.addEventListener('change', facebookSelectPage);
+    $('facebookAutoReply')?.addEventListener('change', facebookToggleReply);
+    $('facebookPublish')?.addEventListener('click', facebookPublish);
+    $('facebookSchedule')?.addEventListener('click', facebookSchedule);
+    $('facebookRefreshPosts')?.addEventListener('click', facebookLoadPosts);
+    $('facebookRefreshScheduled')?.addEventListener('click', facebookLoadScheduled);
+    $('facebookRefreshInbox')?.addEventListener('click', facebookLoadInbox);
+    $('canvaConnect')?.addEventListener('click', canvaConnect);
+    $('canvaDisconnect')?.addEventListener('click', canvaDisconnect);
+    $('canvaSearchBtn')?.addEventListener('click', () => canvaLoadDesigns(false));
+    $('canvaMoreDesigns')?.addEventListener('click', () => canvaLoadDesigns(true));
+    $('canvaCreate')?.addEventListener('click', canvaCreateDesign);
+    $('canvaExportRefresh')?.addEventListener('click', canvaPollExport);
+    $('canvaGenerateBtn')?.addEventListener('click', canvaGenerateDesign);
+    $('canvaGenerationRefresh')?.addEventListener('click', canvaPollGeneration);
+    $('canvaNewType')?.addEventListener('change', () => {
+      $('canvaCustomDimensions').hidden = $('canvaNewType').value !== 'custom';
+    });
     $('gmailConnect')?.addEventListener('click', () => gmailConnect());
     $('gmailDisconnect')?.addEventListener('click', () => gmailDisconnect());
     ['gdrive', 'gsheets', 'gdocs', 'gslides', 'gcal', 'gcontacts'].forEach((svc) => {
@@ -1996,6 +2440,136 @@ export default function StudioApp({ firebaseConfig, vapiConfig }) {
                   After each finished call, the agent sends a transcript summary to your WhatsApp.
                   Nothing is shared with third parties.
                 </p>
+              </section>
+
+              <section className="wa-card" aria-labelledby="facebookHeading">
+                <div className="wa-head">
+                  <span className="wa-icon" aria-hidden="true" style={{ background: '#162c57', color: '#65a0ff' }}>
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 12C22 6.48 17.52 2 12 2S2 6.48 2 12c0 4.99 3.66 9.13 8.44 9.88v-6.98H7.9V12h2.54V9.8c0-2.5 1.49-3.89 3.77-3.89 1.09 0 2.23.2 2.23.2v2.46h-1.26c-1.24 0-1.63.77-1.63 1.56V12h2.77l-.44 2.9h-2.33v6.98C18.34 21.13 22 16.99 22 12z"/></svg>
+                  </span>
+                  <div className="wa-head-text">
+                    <div className="wa-title" id="facebookHeading">Facebook Pages &amp; Messenger</div>
+                    <div className="wa-sub" id="facebookStatusText">Checking connection…</div>
+                  </div>
+                  <span className="wa-dot" id="facebookDot" aria-hidden="true" />
+                </div>
+                <p className="wa-note">Authorize your Facebook account, choose one managed Page and use your CSR agent to post content or answer customer messages.</p>
+                <div className="wa-actions">
+                  <button className="wa-btn" type="button" id="facebookConnect">Connect Facebook</button>
+                  <button className="wa-btn ghost" type="button" id="facebookDisconnect" hidden>Disconnect</button>
+                </div>
+                <div id="facebookControls" className="fb-controls" hidden>
+                  <div className="wa-field">
+                    <label htmlFor="facebookPageSelect">Facebook Page for this agent</label>
+                    <select id="facebookPageSelect" aria-label="Select Facebook Page"><option value="">Select a Facebook Page</option></select>
+                    <p className="wa-note" id="facebookPageInfo" />
+                  </div>
+                </div>
+                <div id="facebookEditor" className="fb-controls" hidden>
+                  <label className="wa-toggle">
+                    <input type="checkbox" id="facebookAutoReply" />
+                    <span>Automatically reply to incoming Messenger chats</span>
+                  </label>
+                  <p className="wa-note">Uses the current agent persona and configured Gemini model. Replies are restricted to customer-initiated conversations within the standard 24-hour window.</p>
+                  <div className="wa-field">
+                    <label htmlFor="facebookPostText">Create Facebook Page post</label>
+                    <textarea id="facebookPostText" rows="3" maxLength="10000" placeholder="Write a post for your Facebook Page…" />
+                  </div>
+                  <div className="wa-actions">
+                    <button className="wa-btn" type="button" id="facebookPublish">Publish post</button>
+                    <button className="wa-btn ghost" type="button" id="facebookRefreshPosts">Refresh posts</button>
+                  </div>
+                  <div className="wa-field">
+                    <label htmlFor="facebookScheduleAt">Schedule publishing (local time)</label>
+                    <input id="facebookScheduleAt" type="datetime-local" />
+                  </div>
+                  <div className="wa-actions"><button className="wa-btn ghost" type="button" id="facebookSchedule">Schedule post</button></div>
+                  <div className="wa-actions fb-inbox-title">
+                    <span className="fb-mini-heading">Scheduled posts</span>
+                    <button className="wa-btn ghost" type="button" id="facebookRefreshScheduled">Refresh</button>
+                  </div>
+                  <div className="fb-list" id="facebookScheduledPosts" aria-live="polite" />
+                  <div className="fb-mini-heading">Recent Page posts</div>
+                  <div className="fb-list" id="facebookPosts" aria-live="polite" />
+                  <div className="wa-actions fb-inbox-title">
+                    <span className="fb-mini-heading">Messenger conversations</span>
+                    <button className="wa-btn ghost" type="button" id="facebookRefreshInbox">Refresh inbox</button>
+                  </div>
+                  <div className="fb-list" id="facebookInbox" aria-live="polite" />
+                </div>
+              </section>
+
+              <section className="wa-card" aria-labelledby="canvaHeading">
+                <div className="wa-head">
+                  <span className="wa-icon" aria-hidden="true" style={{ background: 'linear-gradient(135deg, #08c4cd, #7b2fff)', color: '#ffffff' }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M18 5a7.5 7.5 0 1 0 .5 13"/><path d="M17.8 6c-3.8 2.1-4.9 8.4-2.4 10.1 1.1.7 2.5.2 3.6-1.5"/></svg>
+                  </span>
+                  <div className="wa-head-text">
+                    <div className="wa-title" id="canvaHeading">Canva Design Studio</div>
+                    <div className="wa-sub" id="canvaStatusText">Checking connection…</div>
+                  </div>
+                  <span className="wa-dot" id="canvaDot" aria-hidden="true" />
+                </div>
+                <p className="wa-note">Connect your Canva account to discover designs, create new content, export assets and let your CSR agent use the available Canva design tools.</p>
+                <div className="wa-actions">
+                  <button className="wa-btn" type="button" id="canvaConnect">Connect to Canva</button>
+                  <button className="wa-btn ghost" type="button" id="canvaDisconnect" hidden>Disconnect Canva</button>
+                </div>
+                <p className="wa-note" id="canvaPermissionInfo">Connect with OAuth to grant account-specific Canva permissions.</p>
+                <div id="canvaWorkspace" className="fb-controls" hidden>
+                  <div className="fb-mini-heading">Your Canva designs</div>
+                  <div className="wa-actions">
+                    <input id="canvaSearch" className="canva-input" type="search" maxLength="255" placeholder="Search your designs" aria-label="Search Canva designs" />
+                    <button className="wa-btn ghost" type="button" id="canvaSearchBtn">Search</button>
+                  </div>
+                  <div className="fb-list" id="canvaDesignList" aria-live="polite" />
+                  <button className="wa-btn ghost" type="button" id="canvaMoreDesigns" hidden>Load more designs</button>
+                  <div className="fb-mini-heading">Create Canva design</div>
+                  <div className="wa-field">
+                    <label htmlFor="canvaNewTitle">Design title</label>
+                    <input id="canvaNewTitle" className="canva-input" maxLength="255" placeholder="New campaign creative" />
+                    <label htmlFor="canvaNewType">Design type</label>
+                    <select id="canvaNewType" defaultValue="custom">
+                      <option value="custom">Custom size</option>
+                      <option value="presentation">Presentation</option>
+                      <option value="doc">Document</option>
+                      <option value="whiteboard">Whiteboard</option>
+                      <option value="email">Email</option>
+                    </select>
+                    <div className="wa-actions canva-size-row" id="canvaCustomDimensions">
+                      <label htmlFor="canvaWidth">Width <input id="canvaWidth" type="number" min="40" max="8000" defaultValue="1080" /></label>
+                      <label htmlFor="canvaHeight">Height <input id="canvaHeight" type="number" min="40" max="8000" defaultValue="1080" /></label>
+                    </div>
+                  </div>
+                  <button className="wa-btn" type="button" id="canvaCreate">Create design</button>
+                  <div id="canvaLatestResult" className="wa-actions" aria-live="polite" />
+                  <div className="fb-mini-heading">Export designs</div>
+                  <div className="wa-actions">
+                    <label htmlFor="canvaExportFormat">Format</label>
+                    <select id="canvaExportFormat" defaultValue="png">
+                      <option value="png">PNG</option><option value="jpg">JPG</option><option value="pdf">PDF</option>
+                      <option value="mp4">MP4</option><option value="pptx">PPTX</option>
+                      <option value="gif">GIF</option><option value="csv">CSV</option>
+                    </select>
+                    <button className="wa-btn ghost" id="canvaExportRefresh" type="button">Check export</button>
+                  </div>
+                  <div id="canvaExportResult" className="wa-note" aria-live="polite" />
+                  <div id="canvaGeneration" className="fb-controls" hidden>
+                    <div className="fb-mini-heading">AI design generation (Canva preview API)</div>
+                    <p className="wa-note">Available only where your account and app have preview access. Uses Canva AI credits.</p>
+                    <div className="wa-field">
+                      <label htmlFor="canvaBrief">Design brief</label>
+                      <textarea id="canvaBrief" rows="3" maxLength="5000" placeholder="Describe your presentation or document..." />
+                      <label htmlFor="canvaGenerationType">Design output</label>
+                      <select id="canvaGenerationType"><option value="presentation">Presentation</option><option value="doc">Document</option></select>
+                    </div>
+                    <div className="wa-actions">
+                      <button className="wa-btn" id="canvaGenerateBtn" type="button">Generate in Canva</button>
+                      <button className="wa-btn ghost" id="canvaGenerationRefresh" type="button">Check result</button>
+                    </div>
+                    <div id="canvaGenerationResult" className="wa-note" aria-live="polite" />
+                  </div>
+                </div>
               </section>
 
               <section className="wa-card" aria-labelledby="gmailHeading">
