@@ -61,6 +61,24 @@ test('Canva OAuth uses PKCE S256, valid consent scopes, redirect and random stat
   assert.ok(!url.href.includes('test-secret'));
 });
 
+test('Canva accepts loopback OAuth callbacks and rejects other HTTP hosts', () => {
+  const original = process.env.CANVA_REDIRECT_URI;
+  try {
+    for (const uri of [
+      'http://localhost:3001/api/canva/callback',
+      'http://127.0.0.1:3001/api/canva/callback',
+      'https://callcenter.abitech.site/api/canva/callback'
+    ]) {
+      process.env.CANVA_REDIRECT_URI = uri;
+      assert.equal(canva.config().configured, true, uri);
+    }
+    process.env.CANVA_REDIRECT_URI = 'http://example.org/api/canva/callback';
+    assert.equal(canva.config().configured, false);
+  } finally {
+    process.env.CANVA_REDIRECT_URI = original;
+  }
+});
+
 test('Canva encrypted tokens round-trip; tampered ciphertext is rejected', () => {
   const encrypted = canva.encrypt('highly-private-canva-refresh-token');
   assert.ok(!encrypted.includes('highly-private'));

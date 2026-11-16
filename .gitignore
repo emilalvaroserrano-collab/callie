@@ -18,3 +18,4 @@ next-env.d.ts
 .DS_Store
 client_secret_*.json
 csr-studio-firebase-adminsdk-*.json
+whatsapp-service/data/
